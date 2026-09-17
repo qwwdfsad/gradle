@@ -19,17 +19,20 @@ package org.gradle.internal.jvm.inspection
 import org.gradle.api.internal.file.TestFiles
 import org.gradle.internal.jvm.Jvm
 import org.gradle.jvm.toolchain.internal.InstallationLocation
+import org.gradle.test.fixtures.concurrent.ConcurrentSpec
 import org.gradle.test.fixtures.file.TestFile
 import org.gradle.test.precondition.Requires
 import org.gradle.test.preconditions.FileSystemTestPreconditions
 
 import org.gradle.testfixtures.internal.NativeServicesTestFixture
-import spock.lang.Specification
 import spock.lang.TempDir
 
 import java.nio.file.Files
+import java.util.concurrent.CyclicBarrier
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
-class CachingJvmMetadataDetectorTest extends Specification {
+class CachingJvmMetadataDetectorTest extends ConcurrentSpec {
 
     @TempDir
     File temporaryFolder
@@ -110,6 +113,95 @@ class CachingJvmMetadataDetectorTest extends Specification {
         then: "only the calls that don't match the predicate get executed again"
         1 * delegate.getMetadata(location1)
         0 * delegate.getMetadata(location2)
+    }
+
+    def "probes different installations concurrently"() {
+        given:
+        def locations = [testLocation("jdk1"), testLocation("jdk2")]
+        def probesStarted = new CyclicBarrier(2)
+        def metadata = Stub(JvmInstallationMetadata)
+        def delegate = { InstallationLocation location ->
+            if (location.location in locations*.location) {
+                probesStarted.await(10, TimeUnit.SECONDS)
+            }
+            metadata
+        } as JvmMetadataDetector
+        def detector = new CachingJvmMetadataDetector(delegate)
+
+        when:
+        async {
+            locations.each { location ->
+                start {
+                    assert detector.getMetadata(location).is(metadata)
+                }
+            }
+        }
+
+        then:
+        noExceptionThrown()
+    }
+
+    def "concurrent requests for the same canonical home share one probe"() {
+        given:
+        def home = new File(temporaryFolder, "jdk")
+        def locations = [testLocation(home.path), testLocation(new File(home, ".").path)]
+        def requestsStarted = new CyclicBarrier(2)
+        def probes = new AtomicInteger()
+        def metadata = Stub(JvmInstallationMetadata)
+        def delegate = { InstallationLocation location ->
+            if (location.location.canonicalFile == home.canonicalFile) {
+                probes.incrementAndGet()
+            }
+            metadata
+        } as JvmMetadataDetector
+        def detector = new CachingJvmMetadataDetector(delegate)
+
+        when:
+        async {
+            locations.each { location ->
+                start {
+                    requestsStarted.await(10, TimeUnit.SECONDS)
+                    assert detector.getMetadata(location).is(metadata)
+                }
+            }
+        }
+
+        then:
+        probes.get() == 1
+    }
+
+    def "invalidation waits for an in-flight probe and removes its result"() {
+        given:
+        def location = testLocation("jdk")
+        def probes = new AtomicInteger()
+        def metadata = Stub(JvmInstallationMetadata)
+        def delegate = { InstallationLocation candidate ->
+            if (candidate.location == location.location && probes.incrementAndGet() == 1) {
+                instant.probing
+                thread.blockUntil.invalidating
+                instant.probeFinished
+            }
+            metadata
+        } as JvmMetadataDetector
+        def detector = new CachingJvmMetadataDetector(delegate)
+
+        when:
+        async {
+            start {
+                detector.getMetadata(location)
+            }
+            start {
+                thread.blockUntil.probing
+                instant.invalidating
+                detector.invalidateItemsMatching { it.is(metadata) }
+                instant.invalidated
+            }
+        }
+        detector.getMetadata(location)
+
+        then:
+        instant.probeFinished < instant.invalidated
+        probes.get() == 2
     }
 
     private InstallationLocation testLocation(String filePath) {

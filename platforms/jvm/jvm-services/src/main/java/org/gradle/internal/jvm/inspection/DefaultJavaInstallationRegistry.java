@@ -17,6 +17,7 @@
 package org.gradle.internal.jvm.inspection;
 
 import com.google.common.annotations.VisibleForTesting;
+import org.gradle.api.internal.jvm.JavaVersionParser;
 import org.gradle.api.internal.file.FileResolver;
 import org.gradle.api.logging.Logger;
 import org.gradle.api.logging.Logging;
@@ -44,11 +45,14 @@ import org.jspecify.annotations.Nullable;
 
 import javax.inject.Inject;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Objects;
 import java.util.List;
 import java.util.Set;
+import java.util.Properties;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
@@ -136,10 +140,20 @@ public class DefaultJavaInstallationRegistry implements JavaInstallationRegistry
 
     @Override
     public List<JvmToolchainMetadata> toolchains() {
+        return collectToolchains(location -> true);
+    }
+
+    @Override
+    public List<JvmToolchainMetadata> toolchains(int languageVersion) {
+        return collectToolchains(location -> mayHaveLanguageVersion(location, languageVersion));
+    }
+
+    private List<JvmToolchainMetadata> collectToolchains(Predicate<InstallationLocation> filter) {
         if (progressLoggerFactory != null) {
             ProgressLogger progressLogger = progressLoggerFactory.newOperation(JavaInstallationRegistry.class).start("Discovering toolchains", "Discovering toolchains");
             List<JvmToolchainMetadata> result = listInstallations()
                 .parallelStream()
+                .filter(filter)
                 .peek(location -> progressLogger.progress("Extracting toolchain metadata from " + location.getDisplayName()))
                 .map(this::resolveMetadata)
                 .collect(Collectors.toList());
@@ -148,8 +162,26 @@ public class DefaultJavaInstallationRegistry implements JavaInstallationRegistry
         } else {
             return listInstallations()
                 .parallelStream()
+                .filter(filter)
                 .map(this::resolveMetadata)
                 .collect(Collectors.toList());
+        }
+    }
+
+    private static boolean mayHaveLanguageVersion(InstallationLocation location, int languageVersion) {
+        // Installation names are arbitrary. Use the JDK's own release metadata only to
+        // reject incompatible versions; matching and unknown candidates still get a full probe.
+        Properties release = new Properties();
+        try (InputStream input = new FileInputStream(new File(location.getLocation(), "release"))) {
+            release.load(input);
+            String version = release.getProperty("JAVA_VERSION");
+            if (version == null || version.length() < 3 || !version.startsWith("\"") || !version.endsWith("\"")) {
+                return true;
+            }
+            int declaredVersion = JavaVersionParser.parseMajorVersion(version.substring(1, version.length() - 1));
+            return declaredVersion == languageVersion;
+        } catch (IOException | IllegalArgumentException e) {
+            return true;
         }
     }
 

@@ -29,5 +29,14 @@ import java.util.List;
 public interface JavaInstallationRegistry {
     List<JvmToolchainMetadata> toolchains();
 
+    /**
+     * Returns metadata for installations that may provide the requested language version.
+     * <p>
+     * A different version in an installation's {@code release} file rules it out without
+     * launching its JVM. Installations without usable release metadata are still probed.
+     * The caller must apply its full metadata matcher to the returned candidates.
+     */
+    List<JvmToolchainMetadata> toolchains(int languageVersion);
+
     void addInstallation(InstallationLocation downloadedInstallation);
 }

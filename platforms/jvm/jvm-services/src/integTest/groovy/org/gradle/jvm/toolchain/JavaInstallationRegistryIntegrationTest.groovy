@@ -22,10 +22,45 @@ import org.gradle.integtests.fixtures.AvailableJavaHomes
 import org.gradle.internal.jvm.Jvm
 import org.gradle.test.fixtures.file.TestFile
 import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.OsTestPreconditions
 import org.gradle.test.preconditions.InstalledJdkTestPreconditions
 import org.gradle.integtests.fixtures.modes.ToBeFixedForIsolatedProjects
 
 class JavaInstallationRegistryIntegrationTest extends AbstractIntegrationSpec {
+
+    @Requires(OsTestPreconditions.Unix)
+    def "does not launch an incompatible JVM when resolving a compiler"() {
+        given:
+        def otherVersion = Jvm.current().javaVersion.majorVersion == "8" ? "17" : "8"
+        def otherHome = file("unrelated-jdk").createDir()
+        otherHome.file("release").text = "JAVA_VERSION=\"${otherVersion}\""
+        def executable = otherHome.file("bin/java").createFile()
+        executable.text = '#!/bin/sh\ntouch "$0.probed"\nexit 1\n'
+        executable.setExecutable(true)
+        propertiesFile << """
+            org.gradle.java.installations.paths=${otherHome.absolutePath}
+            org.gradle.java.installations.auto-detect=false
+            org.gradle.java.installations.auto-download=false
+        """
+        buildFile << """
+            plugins { id 'java' }
+            def compiler = javaToolchains.compilerFor {
+                languageVersion = JavaLanguageVersion.of(JavaVersion.current().majorVersion as int)
+            }
+            tasks.register('showCompiler') {
+                doLast {
+                    println "Selected compiler: " + compiler.get().metadata.installationPath.asFile
+                }
+            }
+        """
+
+        when:
+        succeeds("showCompiler")
+
+        then:
+        outputContains("Selected compiler: " + Jvm.current().javaHome)
+        !otherHome.file("bin/java.probed").exists()
+    }
 
     def "installation registry has no installations without environment setup or auto-detection"() {
         buildFile << """

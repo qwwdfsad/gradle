@@ -512,7 +512,7 @@ class JavaToolchainQueryServiceTest extends Specification {
         }
 
         def registry = Stub(JavaInstallationRegistry)
-        registry.toolchains() >> installations
+        registry.toolchains(_ as int) >> installations
         registry
     }
 

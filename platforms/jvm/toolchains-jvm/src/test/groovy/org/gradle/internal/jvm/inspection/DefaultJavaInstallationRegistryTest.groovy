@@ -253,6 +253,69 @@ class DefaultJavaInstallationRegistryTest extends Specification {
         loggerFactory.recordedMessages.find { it.contains("Extracting toolchain metadata from '$jdk8'") }
     }
 
+    def "does not probe installations whose release version cannot match"() {
+        given:
+        def jdk8 = createJdkInstallation("misleading-name-11")
+        jdk8.file("release").text = 'JAVA_VERSION="1.8.0_504"'
+        def jdk11 = createJdkInstallation("misleading-name-8")
+        jdk11.file("release").text = 'JAVA_VERSION="11.0.32.1"'
+        def metadata = Stub(JvmInstallationMetadata)
+        def registry = createRegistry([jdk8, jdk11])
+
+        when:
+        def candidates = registry.toolchains(11)
+
+        then:
+        candidates*.location*.location == [jdk11]
+        1 * jvmMetadataDetector.getMetadata({ it.location == jdk11 }) >> metadata
+        0 * jvmMetadataDetector.getMetadata(_)
+
+        when: "a later query requests a different language version"
+        candidates = registry.toolchains(8)
+
+        then:
+        candidates*.location*.location == [jdk8]
+        1 * jvmMetadataDetector.getMetadata({ it.location == jdk8 }) >> metadata
+        0 * jvmMetadataDetector.getMetadata(_)
+
+        when: "the diagnostic listing requests all installations"
+        candidates = registry.toolchains()
+
+        then:
+        candidates.size() == 2
+        2 * jvmMetadataDetector.getMetadata(_) >> metadata
+    }
+
+    def "probes installations with matching or unknown release metadata"() {
+        given:
+        def home = createJdkInstallation("arbitrary")
+        if (releaseText != null) {
+            home.file("release").text = releaseText
+        }
+        def registry = createRegistry([home])
+        def metadata = Stub(JvmInstallationMetadata)
+
+        when:
+        def candidates = registry.toolchains(requestedVersion)
+
+        then:
+        candidates*.location*.location == [home]
+        1 * jvmMetadataDetector.getMetadata({ it.location == home }) >> metadata
+
+        where:
+        releaseText                   | requestedVersion
+        null                          | 11
+        ''                            | 11
+        'OS_ARCH="aarch64"'            | 11
+        'JAVA_VERSION=11.0.1'          | 11
+        'JAVA_VERSION=""'             | 11
+        'JAVA_VERSION="invalid"'      | 11
+        'JAVA_VERSION="11.0.32.1"'    | 11
+        'JAVA_VERSION="1.8.0_504"'    | 8
+        'JAVA_VERSION="26-ea"'        | 26
+        'JAVA_VERSION="99.0.1"'       | 99
+    }
+
     private TestFile createJdkInstallation(String version) {
         def jdkHome = temporaryFolder.createDir("jdk-$version")
         def binDir = jdkHome.createDir("bin")

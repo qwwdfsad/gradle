@@ -206,7 +206,7 @@ public class JavaToolchainQueryService {
     private Optional<JavaToolchain> findInstalledToolchain(JavaToolchainSpec spec, Set<JavaInstallationCapability> requiredCapabilities) {
         Predicate<JvmInstallationMetadata> matcher = new JvmInstallationMetadataMatcher(spec, requiredCapabilities);
 
-        return registry.toolchains().stream()
+        return registry.toolchains(spec.getLanguageVersion().get().asInt()).stream()
             .filter(result -> result.metadata.isValidInstallation())
             .filter(result -> matcher.test(result.metadata))
             .min(Comparator.comparing(result -> result.metadata, new JvmInstallationMetadataComparator(currentJavaHome)))

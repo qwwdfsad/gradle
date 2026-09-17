@@ -21,15 +21,16 @@ import org.gradle.jvm.toolchain.internal.InstallationLocation;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Predicate;
 
 public class CachingJvmMetadataDetector implements JvmMetadataDetector, ConditionalInvalidation<JvmInstallationMetadata> {
 
-    private final Map<File, JvmInstallationMetadata> javaMetadata = Collections.synchronizedMap(new HashMap<>());
+    private final Map<File, JvmInstallationMetadata> javaMetadata = new ConcurrentHashMap<>();
     private final JvmMetadataDetector delegate;
+    private final ReentrantReadWriteLock invalidationLock = new ReentrantReadWriteLock();
 
     @SuppressWarnings("this-escape")
     public CachingJvmMetadataDetector(JvmMetadataDetector delegate) {
@@ -40,7 +41,14 @@ public class CachingJvmMetadataDetector implements JvmMetadataDetector, Conditio
     @Override
     public JvmInstallationMetadata getMetadata(InstallationLocation javaInstallationLocation) {
         File javaHome = resolveSymlink(javaInstallationLocation.getLocation());
-        return javaMetadata.computeIfAbsent(javaHome, file -> delegate.getMetadata(javaInstallationLocation));
+        // Independent installations can be probed concurrently, while requests for the same
+        // canonical home share a result. Invalidation still waits for in-flight probes.
+        invalidationLock.readLock().lock();
+        try {
+            return javaMetadata.computeIfAbsent(javaHome, file -> delegate.getMetadata(javaInstallationLocation));
+        } finally {
+            invalidationLock.readLock().unlock();
+        }
     }
 
     private File resolveSymlink(File jdkPath) {
@@ -53,8 +61,11 @@ public class CachingJvmMetadataDetector implements JvmMetadataDetector, Conditio
 
     @Override
     public void invalidateItemsMatching(Predicate<JvmInstallationMetadata> predicate) {
-        synchronized (javaMetadata) {
+        invalidationLock.writeLock().lock();
+        try {
             javaMetadata.entrySet().removeIf(it -> predicate.test(it.getValue()));
+        } finally {
+            invalidationLock.writeLock().unlock();
         }
     }
 }

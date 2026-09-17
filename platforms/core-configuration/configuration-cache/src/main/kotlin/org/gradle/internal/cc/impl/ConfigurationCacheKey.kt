@@ -38,7 +38,7 @@ class ConfigurationCacheKey(
 ) {
 
     val string: String by unsafeLazy {
-        Hashing.md5().newHasher().apply {
+        Hashing.newHasher().apply {
             putCacheKeyComponents()
         }.hash().toCompactString()
     }

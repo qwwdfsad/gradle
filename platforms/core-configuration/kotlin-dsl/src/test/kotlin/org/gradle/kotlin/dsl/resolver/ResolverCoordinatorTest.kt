@@ -1,12 +1,50 @@
 package org.gradle.kotlin.dsl.resolver
 
+import org.gradle.internal.hash.Hashing
 import org.gradle.kotlin.dsl.fixtures.assertInstanceOf
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 
 
 @Suppress("DEPRECATION")
 class ResolverCoordinatorTest {
+
+    @Test
+    fun `hashes concatenated section tokens as UTF-8 with the default hash function`() {
+        val environment = environmentWithGetScriptSectionTokensReturning(
+            "plugins" to sequenceOf("最後"),
+            "buildscript" to sequenceOf("café", "😃"),
+            "initscript" to sequenceOf("init"),
+            "pluginManagement" to sequenceOf("first")
+        )
+
+        org.gradle.kotlin.dsl.fixtures.withInstanceOf<ResolverAction.RequestNew>(resolverActionFor(environment, null)) {
+            assertArrayEquals(
+                Hashing.hashBytes("firstinitcafé😃最後".toByteArray(Charsets.UTF_8)).toByteArray(),
+                classPathBlocksHash
+            )
+        }
+    }
+
+    @Test
+    fun `token boundaries do not change the classpath blocks hash`() {
+        val env1 = environmentWithGetScriptSectionTokensReturning("buildscript" to sequenceOf("foo", "bar"))
+        val env2 = environmentWithGetScriptSectionTokensReturning("buildscript" to sequenceOf("foobar"))
+
+        org.gradle.kotlin.dsl.fixtures.withInstanceOf<ResolverAction.RequestNew>(resolverActionFor(env1, null)) {
+            assertInstanceOf<ResolverAction.ReturnPrevious>(resolverActionFor(env2, scriptDependencies()))
+        }
+    }
+
+    @Test
+    fun `empty sections use the default empty hash`() {
+        val environment = environmentWithGetScriptSectionTokensReturning()
+
+        org.gradle.kotlin.dsl.fixtures.withInstanceOf<ResolverAction.RequestNew>(resolverActionFor(environment, null)) {
+            assertArrayEquals(Hashing.hashBytes(byteArrayOf()).toByteArray(), classPathBlocksHash)
+        }
+    }
 
     @Test
     fun `given an environment with a 'getScriptSectionTokens' entry, when no buildscript change, it will not try to retrieve the model`() {

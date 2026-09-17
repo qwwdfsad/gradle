@@ -3,7 +3,7 @@ plugins {
     id("gradlebuild.publish-public-libraries")
 }
 
-description = "Tools for creating secure hashes for files and other content"
+description = "Tools for hashing files and other content"
 
 dependencies {
     api(projects.stdlibJavaExtensions)
@@ -11,6 +11,7 @@ dependencies {
     api(libs.jspecify)
 
     implementation(libs.guava)
+    implementation(libs.hash4j)
 }
 
 gradleModule {

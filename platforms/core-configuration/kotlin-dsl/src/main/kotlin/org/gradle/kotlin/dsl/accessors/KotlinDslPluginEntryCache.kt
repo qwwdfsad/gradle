@@ -22,7 +22,7 @@ import org.gradle.cache.IndexedCacheParameters
 import org.gradle.cache.PersistentCache
 import org.gradle.cache.internal.InMemoryCacheDecoratorFactory
 import org.gradle.cache.scopes.BuildTreeScopedCacheBuilderFactory
-import org.gradle.internal.hash.ChecksumService
+import org.gradle.internal.hash.FileHasher
 import org.gradle.internal.hash.HashCode
 import org.gradle.internal.serialize.Decoder
 import org.gradle.internal.serialize.Encoder
@@ -32,16 +32,16 @@ import org.gradle.internal.service.scopes.Scope
 import org.gradle.internal.service.scopes.ServiceScope
 import org.gradle.kotlin.dsl.internal.sharedruntime.codegen.PluginEntry
 import org.gradle.kotlin.dsl.internal.sharedruntime.codegen.PluginEntryCache
+import java.io.Closeable
 import java.io.File
-import java.lang.AutoCloseable
 import java.util.function.Supplier
 
 @ServiceScope(Scope.BuildTree::class)
 internal class KotlinDslPluginEntryCache(
     cacheBuilderFactory: BuildTreeScopedCacheBuilderFactory,
     inMemoryCacheDecoratorFactory: InMemoryCacheDecoratorFactory,
-    private val checksums: ChecksumService,
-) : PluginEntryCache, AutoCloseable {
+    private val fileHasher: FileHasher,
+) : PluginEntryCache, Closeable {
 
     private val cacheBuilder: PersistentCache =
         cacheBuilderFactory
@@ -65,7 +65,7 @@ internal class KotlinDslPluginEntryCache(
         jar: File,
         producer: (File) -> List<PluginEntry>
     ): List<PluginEntry> =
-        cache.get(checksums.md5(jar), Supplier {
+        cache.get(fileHasher.hash(jar), Supplier {
             producer.invoke(jar)
         })
 

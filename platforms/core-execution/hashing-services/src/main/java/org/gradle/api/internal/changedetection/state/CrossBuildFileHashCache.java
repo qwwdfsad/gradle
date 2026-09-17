@@ -53,7 +53,7 @@ public class CrossBuildFileHashCache implements Closeable {
     }
 
     public enum Kind {
-        FILE_HASHES("fileHashes", "file hash cache"),
+        FILE_HASHES("fileHashes-xxh3", "file hash cache"),
         CHECKSUMS("checksums", "checksums cache");
         private final String cacheId;
         private final String description;

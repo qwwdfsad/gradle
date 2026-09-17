@@ -45,6 +45,20 @@ class DefaultSettingsTest extends DefaultSettingsCommonTest {
         settings.classLoaderScope.is(classLoaderScope)
     }
 
+    def 'generates a project name with a six digit hexadecimal suffix for a filesystem root'() {
+        given:
+        projectDescriptorRegistry = new DefaultProjectDescriptorRegistry()
+
+        when:
+        createSettings(File.listRoots()[0].path)
+
+        then:
+        def rootIndicator = settingsDir.toPath().root.toString().replaceAll('[\\\\:\\/]*', '')
+        def prefix = "generated-" + rootIndicator + (rootIndicator.empty ? "" : "-")
+        settings.rootProject.name.startsWith(prefix)
+        settings.rootProject.name.substring(prefix.length()) ==~ /[0-9a-f]{6}/
+    }
+
     def 'can include projects'() {
         String projectA = "a"
         String projectB = "b"

@@ -508,7 +508,7 @@ public class TestFile extends File {
 
     public static HashCode md5(File file) {
         try {
-            return Hashing.hashFile(file);
+            return Hashing.md5().hashFile(file);
         } catch (IOException e) {
             throw UncheckedException.throwAsUncheckedException(e);
         }

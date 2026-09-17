@@ -81,20 +81,20 @@ class DefaultClasspathFingerprinterTest extends Specification {
 
         then:
         fileCollectionFingerprint == [
-            ['root1.txt', '', '006240e2be8cab1da7ef856d241a35e0'],
-            ['file1.txt', 'file1.txt', '747a88be8259e66d39362bcc204e3276'],
-            ['file2.txt', 'file2.txt', '7e9123cc118f9c4f436614b9f9402e13'],
-            ['root2.txt', '', '2b86399532976c2fb33f09bc7bdee422'],
+            ['root1.txt', '', 'ccd9cdea88e7fad8d12818f51e9235e3'],
+            ['file1.txt', 'file1.txt', 'ed1fbe2fc2ce1b4e2658e9cc02db3291'],
+            ['file2.txt', 'file2.txt', 'd2bd2deafcab41e51d736360e2add532'],
+            ['root2.txt', '', '1aab2283185edff4cae6b4914297f50e'],
         ]
 
         when:
         fileCollectionFingerprint = fingerprint(rootFile2, rootFile1, rootDir)
         then:
         fileCollectionFingerprint == [
-            ['root2.txt', '', '2b86399532976c2fb33f09bc7bdee422'],
-            ['root1.txt', '', '006240e2be8cab1da7ef856d241a35e0'],
-            ['file1.txt', 'file1.txt', '747a88be8259e66d39362bcc204e3276'],
-            ['file2.txt', 'file2.txt', '7e9123cc118f9c4f436614b9f9402e13'],
+            ['root2.txt', '', '1aab2283185edff4cae6b4914297f50e'],
+            ['root1.txt', '', 'ccd9cdea88e7fad8d12818f51e9235e3'],
+            ['file1.txt', 'file1.txt', 'ed1fbe2fc2ce1b4e2658e9cc02db3291'],
+            ['file2.txt', 'file2.txt', 'd2bd2deafcab41e51d736360e2add532'],
         ]
     }
 
@@ -120,15 +120,15 @@ class DefaultClasspathFingerprinterTest extends Specification {
         then:
 
         fileCollectionFingerprint == [
-            ['library.jar', '', 'e3f8c5a79d138a40570261fa7de40642'],
-            ['fourthFile.txt', 'fourthFile.txt', '37b040e234b12a70145edbdb79683ee9'],
-            ['build.log', 'subdir/build.log', '224c45bdc38a7e3c52cdcc6126d78946'],
-            ['thirdFile.txt', 'thirdFile.txt', '138f1960a77eecec5f03362421bf967a'],
+            ['library.jar', '', '9fc7a684d9211b57ea92bdb21d772e63'],
+            ['fourthFile.txt', 'fourthFile.txt', '2b844b1593547b5b149e90b29228e8cd'],
+            ['build.log', 'subdir/build.log', '460e431d1fd8e9236b412efba37be4c5'],
+            ['thirdFile.txt', 'thirdFile.txt', 'cc6b00efe623fbf2ee23764693917505'],
         ]
 
         resourceHashesCache.keySet().size() == 1
         def key = resourceHashesCache.keySet().iterator().next()
-        resourceHashesCache.getIfPresent(key).toString() == 'e3f8c5a79d138a40570261fa7de40642'
+        resourceHashesCache.getIfPresent(key).toString() == '9fc7a684d9211b57ea92bdb21d772e63'
     }
 
     def "detects moving of files in jars and directories"() {
@@ -146,8 +146,8 @@ class DefaultClasspathFingerprinterTest extends Specification {
         def fileCollectionFingerprint = fingerprint(zipFile, classes)
         then:
         fileCollectionFingerprint == [
-            ['library.jar', '', 'eaafc4a09214a09ffe2de2d02d5abd3c'],
-            ['thirdFile.txt', 'thirdFile.txt', '138f1960a77eecec5f03362421bf967a'],
+            ['library.jar', '', '29a00c2ac5692da34878feb98cb44cdb'],
+            ['thirdFile.txt', 'thirdFile.txt', 'cc6b00efe623fbf2ee23764693917505'],
         ]
 
         when:
@@ -159,8 +159,8 @@ class DefaultClasspathFingerprinterTest extends Specification {
 
         then:
         fileCollectionFingerprint == [
-            ['library.jar', '', 'c23694a1b7e494fab2aa21f5d644d0bc'],
-            ['thirdFile.txt', 'subdir/thirdFile.txt', '138f1960a77eecec5f03362421bf967a'],
+            ['library.jar', '', '56fd59484c3b68c2a953e5a17cf816af'],
+            ['thirdFile.txt', 'subdir/thirdFile.txt', 'cc6b00efe623fbf2ee23764693917505'],
         ]
     }
 
@@ -188,12 +188,12 @@ class DefaultClasspathFingerprinterTest extends Specification {
 
         then:
         fileCollectionFingerprint == [
-            ['library.jar', '', 'e3f8c5a79d138a40570261fa7de40642'],
-            ['another-library.jar', '', '5d9e97561e1c86c891600c8df838f7de']
+            ['library.jar', '', '9fc7a684d9211b57ea92bdb21d772e63'],
+            ['another-library.jar', '', 'a6147596a87057248a3cc33436458aef']
         ]
         resourceHashesCache.keySet().size() == 2
         def values = resourceHashesCache.keySet().collect { resourceHashesCache.getIfPresent(it).toString() } as Set
-        values == ['e3f8c5a79d138a40570261fa7de40642', '5d9e97561e1c86c891600c8df838f7de'] as Set
+        values == ['9fc7a684d9211b57ea92bdb21d772e63', 'a6147596a87057248a3cc33436458aef'] as Set
 
         when:
         fileCollectionFingerprint = fingerprint(zipFile, zipFile2)
@@ -201,11 +201,11 @@ class DefaultClasspathFingerprinterTest extends Specification {
 
         then:
         fileCollectionFingerprint == [
-            ['library.jar', '', 'e3f8c5a79d138a40570261fa7de40642'],
-            ['another-library.jar', '', '5d9e97561e1c86c891600c8df838f7de']
+            ['library.jar', '', '9fc7a684d9211b57ea92bdb21d772e63'],
+            ['another-library.jar', '', 'a6147596a87057248a3cc33436458aef']
         ]
         resourceHashesCache.keySet().size() == 2
-        values == ['e3f8c5a79d138a40570261fa7de40642', '5d9e97561e1c86c891600c8df838f7de'] as Set
+        values == ['9fc7a684d9211b57ea92bdb21d772e63', 'a6147596a87057248a3cc33436458aef'] as Set
     }
 
     def "empty jars are not ignored"() {
@@ -220,8 +220,8 @@ class DefaultClasspathFingerprinterTest extends Specification {
         def classpathFingerprint = fingerprint(emptyJar, nonEmptyJar)
         then:
         classpathFingerprint == [
-            ['empty.jar', '', '73aaa2573075495cce6048c54637763c'],
-            ['nonEmpty.jar', '', '252a9e49dedde612c99dd76008d11b03']
+            ['empty.jar', '', '7f0e8bdf6acd4193c9f7dad3007d07df'],
+            ['nonEmpty.jar', '', '1a06709b2bb411921af59ca7a541c8f6']
         ]
     }
 

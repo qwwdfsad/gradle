@@ -324,7 +324,7 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
 
         where:
         type        | create              | expectedError
-        'file'      | { it.createFile() } | { "Failed to create MD5 hash for file: ${it.absolutePath} (Permission denied)" }
+        'file'      | { it.createFile() } | { "Failed to create hash for file: ${it.absolutePath} (Permission denied)" }
         'directory' | { it.createDir() }  | { "java.nio.file.AccessDeniedException: ${it.absolutePath}" }
     }
 

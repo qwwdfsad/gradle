@@ -41,6 +41,22 @@ The previous step will help you identify potential problems by issuing deprecati
 
 === Potential breaking changes
 
+[[xxh3_fingerprints]]
+==== File and input fingerprints now use XXH3-128
+
+Gradle now uses XXH3-128 instead of MD5 for file and input fingerprints and internal cache identities.
+Existing MD5-based build cache entries cannot be reused with the new fingerprints, so the first build after upgrading may execute tasks again.
+File fingerprint caches use a separate namespace to avoid reusing hashes produced by the previous algorithm.
+Dependency verification, published checksums, and external protocol checksums are unchanged.
+
+[[minimum_client_worker_jvm_version]]
+==== Clients and workers require JVM 11 or later
+
+The Gradle wrapper, command-line launcher, Tooling API, TestKit, and worker processes now require JVM 11 or later.
+This includes JVMs used to execute tests and compiler daemons.
+The Gradle daemon continues to require JVM 17 or later.
+This change enables the streaming XXH3-128 hashing implementation used for fingerprinting.
+
 [[kotlin_2_4_10]]
 ==== Upgrade to Kotlin 2.4.20
 

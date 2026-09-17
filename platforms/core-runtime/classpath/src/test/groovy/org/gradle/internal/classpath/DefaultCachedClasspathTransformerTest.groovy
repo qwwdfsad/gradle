@@ -47,10 +47,10 @@ import spock.lang.Subject
 import java.util.zip.ZipEntry
 
 class DefaultCachedClasspathTransformerTest extends ConcurrentSpec {
-    private static final String HASH_JAR = "714539262b8a83fed7df4fea9e5ffb9b"
-    private static final String HASH_JAR_WITH_STORED_RESOURCE = "11bde62726935182921459b00d3e449e"
-    private static final String HASH_DIR = "7cd76093160603c3b6bd8b6ee6f958a3"
-    private static final String HASH_COPYING_TRANSFORM_ON_JAR = "o_1f5b1eae547bef94b883b9b49cacc47c"
+    private static final String HASH_JAR = "5a0904923010a80d02ba195b4cd7af2d"
+    private static final String HASH_JAR_WITH_STORED_RESOURCE = "4368779e1b76f32e22cf8434ce631bd8"
+    private static final String HASH_DIR = "ab8e91915d497dbfa2285a4df9139e54"
+    private static final String HASH_COPYING_TRANSFORM_ON_JAR = "o_e1f8168ca1818bc515be007b86b35d8d"
 
     @Rule
     TestNameTestDirectoryProvider testDirectoryProvider = new TestNameTestDirectoryProvider(getClass())
@@ -231,15 +231,21 @@ class DefaultCachedClasspathTransformerTest extends ConcurrentSpec {
         def file = testDir.file("thing.jar")
         jar(file)
         def classpath = DefaultClassPath.of(file)
-        def cachedFile = testDir.file("cached/${HASH_COPYING_TRANSFORM_ON_JAR}/thing.jar")
+        def originalCachedFile = testDir.file("cached/${HASH_COPYING_TRANSFORM_ON_JAR}/thing.jar")
+        def originalContent = file.bytes
+        def cachedFile = testDir.file("cached/o_24205e67c5756cdf5e6a4d68c9d03056/thing.jar")
         transformer.copyingTransform(classpath)
         modifiedJar(file)
+        fileSystemAccess.invalidate([file.absolutePath])
 
         when:
         def cachedClasspath = transformer.copyingTransform(classpath)
 
         then:
         cachedClasspath.asFiles == [cachedFile]
+        cachedFile.bytes == file.bytes
+        originalCachedFile.bytes == originalContent
+        cachedFile.bytes != originalContent
 
         and:
         1 * fileAccessTimeJournal.setLastAccessTime(cachedFile.parentFile, _)
@@ -406,7 +412,7 @@ class DefaultCachedClasspathTransformerTest extends ConcurrentSpec {
         def file = testDir.file("thing.jar")
         jar(file)
         def classpath = DefaultClassPath.of(file)
-        def cachedFile = testDir.file("cached/44e4ed5b086b9f78b9712910fa65b06b/thing.jar")
+        def cachedFile = testDir.file("cached/83444c18c8cacd91b6171c9028e5b768/thing.jar")
 
         when:
         def cachedClasspath = transformer.transform(classpath, transform)

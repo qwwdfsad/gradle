@@ -35,7 +35,7 @@ import static org.gradle.internal.hash.HashCode.Usage.SAFE_TO_REUSE_BYTES;
  * For a 128-bit hash this results in 64 bytes of memory used for each {@code HashCode}.
  * This implementation also requires GC to track two separate objects (the {@code HashCode} object and its {@code byte[]}).
  * <p>
- * Because Gradle uses a lot of MD5 hashes, for 128-bit hashes we have a more efficient implementation.
+ * Because Gradle uses a lot of 128-bit hashes, we have a more efficient implementation for them.
  * {@link HashCode128} uses two longs to store the bits of the hash, and does not need to cache the {@link #hashCode()} either.
  * This results in a memory footprint of 32 bytes.
  * Moreover, there is only one object for GC to keep track of.

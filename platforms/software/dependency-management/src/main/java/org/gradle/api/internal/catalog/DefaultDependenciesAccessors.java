@@ -341,7 +341,7 @@ public class DefaultDependenciesAccessors implements DependenciesAccessors {
 
         @Override
         public Identity identify(Map<String, ValueSnapshot> scalarInputs, Map<String, CurrentFileCollectionFingerprint> fileInputs) {
-            Hasher hasher = Hashing.sha1().newHasher();
+            Hasher hasher = Hashing.newHasher();
             scalarInputs.values().forEach(s -> s.appendToHasher(hasher));
             String identity = hasher.hash().toString();
             return () -> identity;

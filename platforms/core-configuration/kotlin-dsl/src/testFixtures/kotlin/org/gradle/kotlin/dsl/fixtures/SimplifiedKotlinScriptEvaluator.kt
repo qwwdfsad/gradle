@@ -131,7 +131,7 @@ class SimplifiedKotlinScriptEvaluator(
         ).eval(
             target,
             scriptSourceFor(script),
-            Hashing.md5().hashString(script),
+            Hashing.hashString(script),
             mock(),
             targetScope,
             baseScope,
@@ -174,7 +174,7 @@ class SimplifiedKotlinScriptEvaluator(
         // unsafe to share. The hash isolates them; classpath snapshotting (the dominant
         // cold cost) is still amortised because that's keyed by classpath-entry content.
         val classpathFingerprint = scriptCompilationClassPath.asFiles.joinToString { it.absolutePath }
-        val identityHash = Hashing.md5().hashString(script + "\u0000" + classpathFingerprint)
+        val identityHash = Hashing.hashString(script + "\u0000" + classpathFingerprint)
         on { fileName } doReturn "$identityHash/script.gradle.kts"
         on { className } doReturn "Script_gradle"
         on { shortDisplayName } doReturn Describables.of("<test script>")

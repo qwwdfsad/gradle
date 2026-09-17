@@ -14,7 +14,7 @@
 ## Snapshotting
 
 A **snapshot** is a terse representation of the state of some data that we can use to check if the corresponding data has changed at all.
-We use cryptographic hashes to represent the state of the data.
+We use 128-bit hashes to represent the state of the data.
 
 ![File-system snapshotting](File-System%20Snapshotting.drawio.svg)
 
@@ -26,16 +26,12 @@ File collections are snapshotted by the `FileCollectionSnapshotter` as `FileSyst
 
 ## Hashing
 
-We use the MD5[^md5-safety] cryptographic[^non-crypto-hashes] hash algorithm in calculating hashes from file contents and scalar inputs for snapshots and fingerprints.
+We use the [XXH3-128](https://xxhash.com) non-cryptographic hash algorithm to calculate hashes from file contents and scalar inputs for snapshots and fingerprints.
 We also use the same algorithm to calculate identifiers like the build cache key of a unit of work.
 
-[^md5-safety]: MD5 has long been compromised from a security standpoint, but our goal is not to protect against malicious intent.
-To avoid accidental collisions, MD5 is still sufficiently strong.
-We use it because it is very fast and universally available on the JVM, and it requires only 16 bytes per hash, which helps conserve memory compared to SHA1 (20 bytes) or SHA256 (32 bytes).
-Other cryptographic hashes could be used, and making the hashing configurable is sensible.
-The [BLAKE family](https://en.wikipedia.org/wiki/BLAKE_(hash_function)) of cryptographic hash functions looks promising for performance, though more research is needed.
-
-[^non-crypto-hashes]: While non-cryptographic hash algorithms like [xxHash](https://xxhash.com) or [MurmurHash](https://en.wikipedia.org/wiki/MurmurHash) are significantly faster, they lack the astronomical collision resistance we require.
+XXH3-128 provides fast streaming hashing and retains the 16-byte hash size previously used by MD5.
+These fingerprints detect accidental changes; they are not a security boundary and must not be used to verify untrusted content against malicious modification.
+Named checksums used for dependency verification, publishing, and external protocols retain their specified algorithms.
 
 We use [Merkle trees](https://en.wikipedia.org/wiki/Merkle_tree) to generate a single hash representing complex inputs.
 (See `MerkleDirectorySnapshotBuilder`.)

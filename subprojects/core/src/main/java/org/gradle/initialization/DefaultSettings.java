@@ -69,7 +69,7 @@ import java.util.stream.Collectors;
 
 import static java.time.Instant.now;
 import static org.apache.commons.lang3.ArrayUtils.contains;
-import static org.gradle.internal.hash.Hashing.sha512;
+import static org.gradle.internal.hash.Hashing.hashString;
 
 public abstract class DefaultSettings extends AbstractPluginAware implements SettingsInternal {
     private ScriptSource settingsScript;
@@ -123,7 +123,7 @@ public abstract class DefaultSettings extends AbstractPluginAware implements Set
             String rootIndicator = settingsDir.toPath().getRoot().toString().replaceAll("[\\\\:\\/]*", "");
             // using "-" to separate the parts of the root project name to allow easier usage in the CLI, just in case.
             return "generated-" + rootIndicator  + (rootIndicator.isEmpty() ? "" : "-") +
-                sha512().hashString(now().toString()).toString().substring(0, 6);
+                hashString(now().toString()).toString().substring(0, 6);
         }
         return settingsDir.getName();
     }

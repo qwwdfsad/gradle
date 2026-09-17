@@ -45,6 +45,14 @@ jvmCompile {
     }
 }
 
+tasks.compileJava {
+    options.compilerArgs.addAll(listOf(
+        "--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED"
+    ))
+}
+
 tasks.javadoc {
     options {
         this as StandardJavadocDocletOptions

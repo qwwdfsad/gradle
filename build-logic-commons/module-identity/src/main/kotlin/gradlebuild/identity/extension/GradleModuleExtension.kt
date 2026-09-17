@@ -141,9 +141,9 @@ abstract class ModuleTargetRuntimes {
     fun computeProductionJvmTargetVersion(): Provider<Int> {
         // Should be kept in sync with org.gradle.internal.jvm.SupportedJavaVersions
         val targetRuntimeJavaVersions = mapOf(
-            client to 8,
+            client to 11,
             daemon to 17,
-            worker to 8
+            worker to 11
         )
 
         // By default, compile to 17. This ensures projects that do not declare any target runtimes

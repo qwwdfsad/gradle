@@ -121,7 +121,7 @@ class CommonReport(
             val spoolFile = spoolFileProvider.createTemporaryFile(reportFileName, ".html")
 
             private
-            val hashingStream = HashingOutputStream(Hashing.md5(), spoolFile.outputStream().buffered())
+            val hashingStream = HashingOutputStream(Hashing.defaultFunction(), spoolFile.outputStream().buffered())
 
             private
             val writer = HtmlReportWriter(hashingStream.writer())

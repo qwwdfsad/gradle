@@ -38,11 +38,10 @@ val releasedVersions = gradleModule.identity.releasedVersions.orNull
 
 jvmCompile {
     addCompilationFrom(crossVersionTestSourceSet)
-    // crossVersion tests must be able to run the TAPI client, which is still JVM 8 compatible,
-    // code may also run in Gradle versions that may not support the JVM version used to compile
-    // the production code for the in-development Gradle version
+    // Models compile against the current TAPI client, which requires JVM 11, but may also run
+    // in older Gradle versions that do not support the JVM used to compile daemon code.
     addCompilationFrom(crossVersionTestModelsSourceSet) {
-        targetJvmVersion = 8
+        targetJvmVersion = 11
     }
 }
 

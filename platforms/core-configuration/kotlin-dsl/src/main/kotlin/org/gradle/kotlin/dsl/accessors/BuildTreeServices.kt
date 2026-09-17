@@ -18,7 +18,7 @@ package org.gradle.kotlin.dsl.accessors
 
 import org.gradle.cache.internal.InMemoryCacheDecoratorFactory
 import org.gradle.cache.scopes.BuildTreeScopedCacheBuilderFactory
-import org.gradle.internal.hash.ChecksumService
+import org.gradle.internal.hash.FileHasher
 import org.gradle.internal.service.Provides
 import org.gradle.internal.service.ServiceRegistrationProvider
 
@@ -28,11 +28,11 @@ internal object BuildTreeServices : ServiceRegistrationProvider {
     fun createKotlinDslPluginEntryCache(
         cacheBuilderFactory: BuildTreeScopedCacheBuilderFactory,
         inMemoryCacheDecoratorFactory: InMemoryCacheDecoratorFactory,
-        checksums: ChecksumService,
+        fileHasher: FileHasher,
     ): KotlinDslPluginEntryCache =
         KotlinDslPluginEntryCache(
             cacheBuilderFactory,
             inMemoryCacheDecoratorFactory,
-            checksums,
+            fileHasher,
         )
 }

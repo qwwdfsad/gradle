@@ -15,6 +15,7 @@
  */
 
 import com.gradleup.gr8.FilterTransform
+import com.gradleup.gr8.Gr8Task
 import gradlebuild.basics.launcherDebuggingIsEnabled
 import org.gradle.api.artifacts.type.ArtifactTypeDefinition
 import java.nio.file.Files
@@ -96,6 +97,14 @@ val shadowedWrapperJar = gr8.create("gr") {
     addProgramJarsFrom(filteredRuntimeClasspath)
     proguardFile("src/main/proguard/wrapper.pro")
     systemClassesToolchain {
+        languageVersion = jvmCompile.compilations.named("main")
+            .flatMap { it.targetJvmVersion }
+            .map { JavaLanguageVersion.of(it) }
+    }
+}
+
+tasks.withType<Gr8Task>().configureEach {
+    javaLauncher = javaToolchains.launcherFor {
         languageVersion = jvmCompile.compilations.named("main")
             .flatMap { it.targetJvmVersion }
             .map { JavaLanguageVersion.of(it) }

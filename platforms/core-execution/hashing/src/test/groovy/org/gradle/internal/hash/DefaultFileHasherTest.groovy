@@ -38,7 +38,7 @@ final class DefaultFileHasherTest extends Specification {
 
         then:
         def e = thrown(UncheckedIOException)
-        TextUtil.normaliseFileSeparators(e.message) == "Failed to create MD5 hash for file: ${TextUtil.normaliseFileSeparators(file.absolutePath)} ($explanation)"
+        TextUtil.normaliseFileSeparators(e.message) == "Failed to create hash for file: ${TextUtil.normaliseFileSeparators(file.absolutePath)} ($explanation)"
     }
 
     @Requires(OsTestPreconditions.NotWindows)
@@ -53,6 +53,6 @@ final class DefaultFileHasherTest extends Specification {
 
         then:
         def e = thrown(UncheckedIOException)
-        TextUtil.normaliseFileSeparators(e.message) == "Failed to create MD5 hash for file: ${TextUtil.normaliseFileSeparators(file.absolutePath)} (Permission denied)"
+        TextUtil.normaliseFileSeparators(e.message) == "Failed to create hash for file: ${TextUtil.normaliseFileSeparators(file.absolutePath)} (Permission denied)"
     }
 }

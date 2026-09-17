@@ -48,8 +48,8 @@ dependencies {
 jvmCompile {
     compilations {
         named("main") {
-            // These test fixtures are used by the tooling API tests, which still run on JVM 8
-            targetJvmVersion = 8
+            // These test fixtures are used by the tooling API tests, which run on JVM 11 and later
+            targetJvmVersion = 11
         }
     }
 }

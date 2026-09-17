@@ -82,7 +82,7 @@ The Tooling API itself is a Java library published as part of the Gradle release
 Each Gradle release has a corresponding Tooling API version with the same version number.
 
 The Tooling API classes are loaded into the client's JVM, so they should have a matching version.
-The current version of the Tooling API library is compiled with Java 8 compatibility.
+The current version of the Tooling API library is compiled with Java 11 compatibility.
 
 The JVM running the Tooling API client and the one running the daemon can be different.
 At the same time, classes that are sent to the build via custom build actions need to be targeted to the lowest supported Java version.

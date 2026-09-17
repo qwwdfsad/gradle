@@ -16,6 +16,8 @@
 
 package org.gradle.internal.hash;
 
+import com.dynatrace.hash4j.hashing.HashStream128;
+import com.dynatrace.hash4j.hashing.HashValue128;
 import com.google.common.io.ByteStreams;
 import com.google.common.io.Files;
 import org.jspecify.annotations.Nullable;
@@ -48,7 +50,9 @@ public class Hashing {
 
     private static final HashFunction SHA512 = MessageDigestHashFunction.of("SHA-512");
 
-    private static final HashFunction DEFAULT = MD5;
+    private static final HashFunction XXH3_128 = new Xxh3HashFunction();
+
+    private static final HashFunction DEFAULT = XXH3_128;
 
     /**
      * Returns a new {@link Hasher} based on the default hashing implementation.
@@ -153,33 +157,18 @@ public class Hashing {
         return SHA512;
     }
 
-    private static abstract class MessageDigestHashFunction implements HashFunction {
+    /**
+     * XXH3-128 hashing function. Not suitable for cryptographic checksums.
+     */
+    public static HashFunction xxh3_128() {
+        return XXH3_128;
+    }
+
+    private static abstract class AbstractHashFunction implements HashFunction {
         private final int hexDigits;
 
-        public MessageDigestHashFunction(int hashBits) {
+        public AbstractHashFunction(int hashBits) {
             this.hexDigits = hashBits / 4;
-        }
-
-        public static MessageDigestHashFunction of(String algorithm) {
-            MessageDigest prototype;
-            try {
-                prototype = MessageDigest.getInstance(algorithm);
-            } catch (NoSuchAlgorithmException e) {
-                throw new IllegalArgumentException("Cannot instantiate digest algorithm: " + algorithm);
-            }
-            int hashBits = prototype.getDigestLength() * 8;
-            try {
-                Object ignored = prototype.clone();
-                return new CloningMessageDigestHashFunction(prototype, hashBits);
-            } catch (CloneNotSupportedException e) {
-                return new RegularMessageDigestHashFunction(algorithm, hashBits);
-            }
-        }
-
-        @Override
-        public PrimitiveHasher newPrimitiveHasher() {
-            MessageDigest digest = createDigest();
-            return new MessageDigestHasher(digest);
         }
 
         @Override
@@ -219,8 +208,6 @@ public class Hashing {
             return new HashingOutputStream(this, ByteStreams.nullOutputStream());
         }
 
-        protected abstract MessageDigest createDigest();
-
         @Override
         public int getHexDigits() {
             return hexDigits;
@@ -229,6 +216,132 @@ public class Hashing {
         @Override
         public String toString() {
             return getAlgorithm();
+        }
+    }
+
+    private static abstract class MessageDigestHashFunction extends AbstractHashFunction {
+        public MessageDigestHashFunction(int hashBits) {
+            super(hashBits);
+        }
+
+        public static MessageDigestHashFunction of(String algorithm) {
+            MessageDigest prototype;
+            try {
+                prototype = MessageDigest.getInstance(algorithm);
+            } catch (NoSuchAlgorithmException e) {
+                throw new IllegalArgumentException("Cannot instantiate digest algorithm: " + algorithm);
+            }
+            int hashBits = prototype.getDigestLength() * 8;
+            try {
+                Object ignored = prototype.clone();
+                return new CloningMessageDigestHashFunction(prototype, hashBits);
+            } catch (CloneNotSupportedException e) {
+                return new RegularMessageDigestHashFunction(algorithm, hashBits);
+            }
+        }
+
+        @Override
+        public PrimitiveHasher newPrimitiveHasher() {
+            return new MessageDigestHasher(createDigest());
+        }
+
+        protected abstract MessageDigest createDigest();
+    }
+
+    private static class Xxh3HashFunction extends AbstractHashFunction {
+        private static final com.dynatrace.hash4j.hashing.Hasher128 HASHER = com.dynatrace.hash4j.hashing.Hashing.xxh3_128();
+
+        public Xxh3HashFunction() {
+            super(128);
+        }
+
+        @Override
+        public String getAlgorithm() {
+            return "XXH3-128";
+        }
+
+        @Override
+        public PrimitiveHasher newPrimitiveHasher() {
+            return new Xxh3Hasher(HASHER.hashStream());
+        }
+
+        @Override
+        public HashCode hashBytes(byte[] bytes) {
+            return toHashCode(HASHER.hashBytesTo128Bits(bytes));
+        }
+
+        private static HashCode toHashCode(HashValue128 hash) {
+            return new HashCode.HashCode128(
+                Long.reverseBytes(hash.getMostSignificantBits()),
+                Long.reverseBytes(hash.getLeastSignificantBits())
+            );
+        }
+    }
+
+    private static class Xxh3Hasher implements PrimitiveHasher {
+        private @Nullable HashStream128 stream;
+
+        public Xxh3Hasher(HashStream128 stream) {
+            this.stream = stream;
+        }
+
+        private HashStream128 getStream() {
+            if (stream == null) {
+                throw new IllegalStateException("Cannot reuse hasher!");
+            }
+            return stream;
+        }
+
+        @Override
+        public void putByte(byte value) {
+            getStream().putByte(value);
+        }
+
+        @Override
+        public void putBytes(byte[] bytes) {
+            getStream().putBytes(bytes);
+        }
+
+        @Override
+        public void putBytes(byte[] bytes, int off, int len) {
+            getStream().putBytes(bytes, off, len);
+        }
+
+        @Override
+        public void putInt(int value) {
+            getStream().putInt(value);
+        }
+
+        @Override
+        public void putLong(long value) {
+            getStream().putLong(value);
+        }
+
+        @Override
+        public void putDouble(double value) {
+            putLong(Double.doubleToRawLongBits(value));
+        }
+
+        @Override
+        public void putBoolean(boolean value) {
+            putByte((byte) (value ? 1 : 0));
+        }
+
+        @Override
+        public void putString(CharSequence value) {
+            putBytes(value.toString().getBytes(StandardCharsets.UTF_8));
+        }
+
+        @Override
+        public void putHash(HashCode hashCode) {
+            hashCode.appendToHasher(this);
+        }
+
+        @Override
+        public HashCode hash() {
+            HashValue128 hash = getStream().get();
+            stream = null;
+            return Xxh3HashFunction.toHashCode(hash);
         }
     }
 

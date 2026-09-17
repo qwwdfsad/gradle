@@ -19,6 +19,7 @@
 package org.gradle.kotlin.dsl.resolver
 
 
+import org.gradle.internal.hash.Hashing
 import org.gradle.kotlin.dsl.concurrent.EventLoop
 import org.gradle.kotlin.dsl.concurrent.future
 
@@ -30,7 +31,6 @@ import org.gradle.kotlin.dsl.tooling.models.KotlinBuildScriptModel
 import org.gradle.tooling.BuildException
 
 import java.io.File
-import java.security.MessageDigest
 
 import kotlin.script.dependencies.KotlinScriptExternalDependencies
 import kotlin.script.dependencies.ScriptContents
@@ -305,19 +305,19 @@ object ResolverCoordinator {
         return when (getScriptSectionTokens) {
             null -> null
             else ->
-                MessageDigest.getInstance("MD5").run {
+                Hashing.newPrimitiveHasher().run {
                     val text = script.text ?: script.file?.readText()
                     text?.let { nonNullText ->
                         fun updateWith(section: String) =
                             getScriptSectionTokens(nonNullText, section).forEach {
-                                update(it.toString().toByteArray())
+                                putBytes(it.toString().toByteArray(Charsets.UTF_8))
                             }
                         updateWith("pluginManagement")
                         updateWith("initscript")
                         updateWith("buildscript")
                         updateWith("plugins")
                     }
-                    digest()
+                    hash().toByteArray()
                 }
         }
     }

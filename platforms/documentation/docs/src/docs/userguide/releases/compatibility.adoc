@@ -25,10 +25,10 @@ Gradle runs on the Java Virtual Machine (JVM), which is often provided by either
 A JVM version between 17 and 27 is required to execute Gradle.
 JVM 28 and later versions are not yet supported.
 
-The Gradle wrapper, Gradle client, Tooling API client, and TestKit client are compatible with JVM 8.
+The Gradle wrapper, Gradle client, Tooling API client, and TestKit client require JVM 11 or later.
 
 JDK 6 and above can be used for <<building_java_projects.adoc#sec:java_cross_compilation,compilation>>.
-JVM 8 and above can be used for executing tests.
+JVM 11 and above can be used for executing tests and worker processes.
 
 Any fully supported version of Java can be used for compilation or testing.
 However, the latest Java version may only be supported for compilation or testing, not for running Gradle.

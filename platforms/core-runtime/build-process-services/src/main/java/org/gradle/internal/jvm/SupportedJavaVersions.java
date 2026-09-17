@@ -27,14 +27,14 @@ public class SupportedJavaVersions {
      * <p>
      * The Tooling API client and CLI Client are both Gradle daemon clients.
      */
-    public static final int MINIMUM_CLIENT_JAVA_VERSION = 8;
+    public static final int MINIMUM_CLIENT_JAVA_VERSION = 11;
 
     /**
      * The minimum JVM version that is required to run a Gradle worker process.
      * <p>
      * The Worker API, JVM tests, and JVM compiler daemons all run within a Gradle worker process.
      */
-    public static final int MINIMUM_WORKER_JAVA_VERSION = 8;
+    public static final int MINIMUM_WORKER_JAVA_VERSION = 11;
 
     /**
      * The minimum JVM version that is required to run the Gradle daemon.

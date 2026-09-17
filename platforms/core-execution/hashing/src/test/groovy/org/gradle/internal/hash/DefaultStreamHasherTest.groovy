@@ -24,7 +24,7 @@ class DefaultStreamHasherTest extends Specification {
         when:
         def hash = new DefaultStreamHasher().hash(input)
         then:
-        hash.toString() == "af67a92e9f73b51572e9b94e343d2840"
+        hash.toString() == "e9f10a400f0eaab33c74c8cf5b7b6e9f"
     }
 
     def "can hash input while copying it"() {
@@ -33,7 +33,7 @@ class DefaultStreamHasherTest extends Specification {
         when:
         def hash = new DefaultStreamHasher().hashCopy(input, output)
         then:
-        hash.toString() == "af67a92e9f73b51572e9b94e343d2840"
+        hash.toString() == "e9f10a400f0eaab33c74c8cf5b7b6e9f"
         output.toByteArray() == "hello".bytes
     }
 }

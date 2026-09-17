@@ -127,6 +127,12 @@ Gradle provides [Tooling APIs](userguide/third_party_integration.html) that faci
 ### Performance improvements
 Gradle continuously improves [build performance](userguide/performance.html) through caching, parallelism, and reduced overhead across all phases of the build.
 
+#### Faster file and input fingerprinting
+
+Gradle now uses XXH3-128 instead of MD5 for file and input fingerprints and internal cache identities.
+The new algorithm supports streaming large inputs while retaining 128-bit fingerprints.
+Checksums used for dependency verification, publishing, and external protocols retain their specified algorithms.
+
 ### General improvements
 Gradle provides various incremental updates and performance optimizations to ensure the continued reliability of the build ecosystem.
 

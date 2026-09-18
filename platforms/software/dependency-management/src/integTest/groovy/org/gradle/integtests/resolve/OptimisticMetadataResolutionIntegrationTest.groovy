@@ -120,7 +120,7 @@ class OptimisticMetadataResolutionIntegrationTest extends AbstractHttpDependency
         // No requests, including artifact requests, are allowed on the next online resolution.
         blockingServer.resetExpectations()
         // Resolve a fresh graph rather than reusing a configuration-cached resolution result.
-        executer.withArguments('--max-workers=1', '--no-configuration-cache', '-Dorg.gradle.internal.resolve.metadata.lookahead=false')
+        executer.withArguments('--max-workers=1', '--no-configuration-cache')
         succeeds('resolve')
 
         then:
@@ -150,6 +150,44 @@ class OptimisticMetadataResolutionIntegrationTest extends AbstractHttpDependency
         outputContains('components: [test:lib:2.0]')
         outputContains('edges: [test:lib:1.0 -> test:lib:2.0, test:lib:2.0 -> test:lib:2.0]')
         outputContains('unresolved: []')
+    }
+
+    def "refills a one-request lookahead window while an unrelated root remains blocked"() {
+        given:
+        def first = mavenRepo.module('test', 'first', '1.0').publish()
+        def second = mavenRepo.module('test', 'second', '1.0').publish()
+        def parent = mavenRepo.module('test', 'parent', '1.0')
+            .dependsOn('test', 'first', '1.0')
+            .dependsOn('test', 'second', '1.0').publish()
+        def sibling = mavenRepo.module('test', 'sibling', '1.0').publish()
+        buildFile << """
+            dependencies {
+                conf 'test:parent:1.0'
+                conf 'test:sibling:1.0'
+            }
+        """
+        def roots = blockingServer.expectConcurrentAndBlock(
+            blockingServer.get(parent.pom.path).sendFile(parent.pom.file),
+            blockingServer.get(sibling.pom.path).sendFile(sibling.pom.file)
+        )
+        def firstRequest = blockingServer.expectAndBlock(blockingServer.get(first.pom.path).sendFile(first.pom.file))
+        def secondRequest = blockingServer.expectAndBlock(blockingServer.get(second.pom.path).sendFile(second.pom.file))
+
+        when:
+        executer.withArguments('--max-workers=1', '-Dorg.gradle.internal.resolve.metadata.lookahead.maxPending=1')
+        def build = executer.withTasks('resolve').start()
+        roots.waitForAllPendingCalls()
+        roots.release(parent.pom.path)
+        firstRequest.waitForAllPendingCalls()
+        firstRequest.releaseAll()
+        secondRequest.waitForAllPendingCalls()
+        secondRequest.releaseAll()
+        roots.release(sibling.pom.path)
+        def result = build.waitForFinish()
+
+        then:
+        result.assertOutputContains('components: [test:first:1.0, test:parent:1.0, test:second:1.0, test:sibling:1.0]')
+        result.assertOutputContains('unresolved: []')
     }
 
     def "missing speculative metadata for a conflict loser does not fail the winning graph with root versions #versions"() {

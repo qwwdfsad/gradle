@@ -19,6 +19,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import http.client
+import io
 import json
 import math
 import os
@@ -30,7 +31,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 import xml.etree.ElementTree as ET
@@ -206,16 +207,27 @@ def parse_result(output, expected):
     return result
 
 
-def invocation(gradle, project, home, enabled):
+def invocation(gradle, project, home, enabled, lookahead_depth=2, max_pending=32, max_candidates=1024):
     return [gradle, "--no-daemon", "--no-configuration-cache",
             "--console=plain", "--stacktrace", "--gradle-user-home", str(home),
             "--project-dir", str(project), "-D{}={}".format(PROPERTY, str(enabled).lower()),
-            "-D" + PROPERTY + ".depth=2", "-D" + PROPERTY + ".maxPending=32",
-            "-D" + PROPERTY + ".maxCandidates=1024", "resolveGraph"]
+            "-D{}.depth={}".format(PROPERTY, lookahead_depth),
+            "-D{}.maxPending={}".format(PROPERTY, max_pending),
+            "-D{}.maxCandidates={}".format(PROPERTY, max_candidates), "resolveGraph"]
+
+
+def benchmark_modes(args):
+    if args.baseline_gradle is not None:
+        return (("baseline", args.baseline_gradle, True), ("experimental", args.gradle, True))
+    return (("off", args.gradle, False), ("on", args.gradle, True))
 
 
 def benchmark(args, directory):
     poms, roots, expected = fixture(args.width, args.depth)
+    modes = benchmark_modes(args)
+    for mode, gradle, enabled in modes:
+        print("{}: gradle={}, lookahead={}, depth={}, maxPending={}, maxCandidates={}".format(
+            mode, gradle, str(enabled).lower(), args.lookahead_depth, args.max_pending, args.max_candidates), flush=True)
     for path, body in poms.items():
         target = directory / "repository" / path.lstrip("/")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -227,22 +239,21 @@ def benchmark(args, directory):
         build = build.replace("__DEPENDENCIES__", "\n".join(
             "    graph '{}:{}:{}'".format(GROUP, name, version) for name, version in roots))
         for run in range(1, args.runs + 1):
-            order = (False, True) if run % 2 else (True, False)
+            order = modes if run % 2 else modes[::-1]
             projects = {}
-            for enabled in order:
-                mode = "on" if enabled else "off"
+            for mode, gradle, enabled in order:
                 base = directory / "run-{}".format(run) / mode
                 project, home = base / "project", base / "gradle-user-home"
                 project.mkdir(parents=True)
                 home.mkdir()
                 (project / "settings.gradle").write_text("rootProject.name = 'metadata-lookahead'\n", encoding="utf-8")
                 (project / "build.gradle").write_text(build, encoding="utf-8")
-                projects[enabled] = (base, project, home)
+                projects[mode] = (base, project, home)
             for temperature in ("cold", "warm"):
-                for enabled in order:
-                    mode = "on" if enabled else "off"
-                    base, project, home = projects[enabled]
-                    command = invocation(args.gradle, project, home, enabled)
+                for mode, gradle, enabled in order:
+                    base, project, home = projects[mode]
+                    command = invocation(gradle, project, home, enabled,
+                                         args.lookahead_depth, args.max_pending, args.max_candidates)
                     (base / (temperature + "-command.json")).write_text(json.dumps(command, indent=2), encoding="utf-8")
                     server.reset()
                     log = base / (temperature + ".log")
@@ -270,7 +281,7 @@ def benchmark(args, directory):
                     print("  components: " + ", ".join(result["components"]), flush=True)
     print("All selected graphs match (components and requested/selected edges).")
     for temperature in ("cold", "warm"):
-        for mode in ("off", "on"):
+        for mode, gradle, enabled in modes:
             samples = [r["elapsed_ms"] for r in results if r["temperature"] == temperature and r["mode"] == mode]
             print("{} {} median: {:.3f} ms".format(mode, temperature, statistics.median(samples)))
 
@@ -323,17 +334,66 @@ def self_test():
     assert command[1:3] == ["--no-daemon", "--no-configuration-cache"]
     assert "--priority" not in command
     assert "-D" + PROPERTY + "=true" in command
+    for suffix in (".depth=2", ".maxPending=32", ".maxCandidates=1024"):
+        assert "-D" + PROPERTY + suffix in command
+    parser = argument_parser()
+    args = parser.parse_args(["--gradle", "new-gradle"])
+    assert (args.lookahead_depth, args.max_pending, args.max_candidates) == (2, 32, 1024)
+    assert benchmark_modes(args) == (("off", "new-gradle", False), ("on", "new-gradle", True))
+    args = parser.parse_args(["--gradle", "new-gradle", "--baseline-gradle", "old-gradle",
+                              "--lookahead-depth", "3", "--max-pending", "7", "--max-candidates", "19"])
+    assert benchmark_modes(args) == (("baseline", "old-gradle", True), ("experimental", "new-gradle", True))
+    for baseline in (None, "old-gradle"):
+        args.baseline_gradle = baseline
+        for mode, gradle, enabled in benchmark_modes(args):
+            home = Path(mode) / "home"
+            command = invocation(gradle, Path("project"), home, enabled,
+                                 args.lookahead_depth, args.max_pending, args.max_candidates)
+            assert command[0] == gradle
+            assert command[command.index("--gradle-user-home") + 1] == str(home)
+            assert "-D{}={}".format(PROPERTY, str(enabled).lower()) in command
+            for suffix in (".depth=3", ".maxPending=7", ".maxCandidates=19"):
+                assert "-D" + PROPERTY + suffix in command
+    for option in ("--lookahead-depth", "--max-pending", "--max-candidates"):
+        assert getattr(parser.parse_args([option, "1"]), option[2:].replace("-", "_")) == 1
+        for invalid in ("0", "-1", "1.5", "invalid"):
+            with redirect_stderr(io.StringIO()):
+                try:
+                    parser.parse_args([option, invalid])
+                except SystemExit as error:
+                    assert error.code == 2
+                else:
+                    raise AssertionError("Invalid positive integer accepted: " + option)
     print("Python self-checks passed (no Gradle invocation).")
 
 
-def main():
+def positive_int(value):
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
+def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gradle", help="Installed custom Gradle executable (not the repository wrapper)")
+    parser.add_argument("--baseline-gradle", help="Baseline Gradle executable; compares baseline/experimental with lookahead enabled in both instead of off/on")
+    parser.add_argument("--lookahead-depth", type=positive_int, default=2, help="Lookahead depth in both modes (default: 2)")
+    parser.add_argument("--max-pending", type=positive_int, default=32, help="Maximum pending lookahead requests in both modes (default: 32)")
+    parser.add_argument("--max-candidates", type=positive_int, default=1024, help="Maximum lookahead candidates in both modes (default: 1024)")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--latency-ms", type=float, default=50)
     parser.add_argument("--width", type=int, default=8)
     parser.add_argument("--depth", type=int, default=4)
     parser.add_argument("--self-test", action="store_true", help="Check Python fixture/server/validation without Gradle")
+    return parser
+
+
+def main():
+    parser = argument_parser()
     args = parser.parse_args()
     if args.self_test:
         self_test()
@@ -342,10 +402,13 @@ def main():
         parser.error("--gradle is required unless --self-test is used")
     if min(args.runs, args.width, args.depth) < 1 or not math.isfinite(args.latency_ms) or args.latency_ms < 0:
         parser.error("runs, width and depth must be positive; latency must be finite and nonnegative")
-    executable = shutil.which(args.gradle)
-    if executable is None:
-        parser.error("Gradle executable not found: " + args.gradle)
-    args.gradle = str(Path(executable).resolve())
+    for option in ("gradle", "baseline_gradle"):
+        value = getattr(args, option)
+        if value is not None:
+            executable = shutil.which(value)
+            if executable is None:
+                parser.error("Gradle executable not found for --{}: {}".format(option.replace("_", "-"), value))
+            setattr(args, option, str(Path(executable).resolve()))
     parent = Path(__file__).resolve().parents[1] / "build" / "metadata-lookahead-benchmark"
     parent.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="run-", dir=parent))

@@ -26,14 +26,34 @@ caches and single-flight resolver. Before graph resolution returns, it stops
 accepting work, skips queued jobs, and drains running jobs. The existing Gradle
 HTTP connection pool (20 connections per route, 80 total) is reused unchanged.
 
-Use `--info` to see per-resolution scheduled, completed, failed, and demanded
-candidate counts. "Demanded" means a scheduled identifier was also requested by
-normal resolution, not necessarily that prefetch completed early enough to save
-latency. Build-operation traces label speculative work `Prefetch metadata ...`.
+Use `--info` to see per-resolution candidate, scheduled, completed, failed,
+demanded, and cheap counts. "Demanded" means an admitted candidate was also
+requested by normal resolution, not necessarily that prefetch completed early
+enough to save latency. "Scheduled" counts submitted operations, including those
+skipped before execution; "cheap" counts candidates left to normal traversal.
+Build-operation traces label speculative work `Prefetch metadata ...`.
 Depth bounds speculative expansion from each seed; normal metadata resolution
 starts another lookahead window. The candidate budget bounds the entire graph
-resolution. Work exceeding the outstanding limit is dropped rather than blocking
-normal traversal, and may be admitted if encountered again later.
+resolution, including cached candidates and the backlog.
+
+### Scheduling improvements
+
+* **Refill instead of dropping work:** candidates beyond `maxPending` wait in a
+  FIFO backlog, bounded by `maxCandidates`. Each completion (including failure)
+  admits the next candidate without waiting for graph traversal to rediscover it.
+  This keeps lookahead productive on wide graphs without adding more workers.
+* **Give demanded work precedence:** do not prefetch identifiers already demanded;
+  skip queued/backlogged candidates if normal resolution takes them over. Running
+  requests still complete through the existing single-flight repository resolver.
+* **Avoid cached-metadata tasks:** the existing metadata-cost estimate bypasses
+  speculative operations for cheap metadata. Positive estimates are reused by
+  graph traversal within the resolution; expensive estimates are not retained.
+  Actual resolution still uses the repository chain with normal overrides and
+  cache validation. Demanded cached parents still seed their uncached children.
+
+The backlog is discarded on shutdown; already submitted operations check shutdown
+before accessing repositories. Normal demand resolution never waits for backlog
+admission and the HTTP pool limits remain unchanged.
 
 ### Caveats
 
@@ -45,7 +65,7 @@ normal traversal, and may be admitted if encountered again later.
   a build slower, including an extra wait at the end of resolution.
 * Caps apply per resolution; multiple resolutions multiply the work budget.
 * Dynamic and synthetic resolution paths are not accelerated.
-* Implementation tests cover overlap and a missing losing version; these are
+* Implementation tests cover overlap, backlog refill, warm caches, and a missing losing version; these are
   separate from the successful, all-metadata-present benchmark fixture.
 
 ## Run
@@ -78,7 +98,22 @@ project directories** inside a fresh directory under
 `build/metadata-lookahead-benchmark`. The cold pass uses these empty caches; the
 warm pass reuses each mode's own caches. Off/on execution order alternates each
 run, for both passes. `HOME` is never changed. The harness explicitly sets all
-four prototype properties, using the defaults above for tuning.
+four prototype properties. Override tuning with `--lookahead-depth`,
+`--max-pending`, and `--max-candidates` (all positive integers).
+
+To compare two implementations with lookahead **enabled in both**, preserve an
+installed baseline distribution before installing the new implementation, then use:
+
+```shell
+python3 contributing/metadata-lookahead-benchmark.py \
+  --baseline-gradle "$PWD/build/lookahead-baseline-gradle/bin/gradle" \
+  --gradle "$PWD/build/lookahead-gradle/bin/gradle" \
+  --runs 3 --latency-ms 50 --width 64 --depth 4
+```
+
+This labels modes `baseline`/`experimental` rather than `off`/`on`. Both use the
+same tuning, with separate initially empty caches and alternating execution order.
+Without `--baseline-gradle`, the original off/on comparison is unchanged.
 
 The stopwatch covers graph resolution only, excluding script compilation,
 startup, graph serialization, and artifact resolution. **Warm means warm disk
@@ -145,3 +180,43 @@ Focused implementation tests:
 ./gradlew :dependency-management:forkingIntegTest \
   --tests '*OptimisticMetadataResolutionIntegrationTest'
 ```
+
+## Scheduling comparison
+
+On the same macOS / Amazon Corretto 25.0.4 setup, three alternating runs compared
+the preceding prototype against the scheduling improvements above, with lookahead
+enabled in both distributions. All tuning remained at its defaults; each graph
+used depth 4 and 50 ms injected request latency. Medians (milliseconds):
+
+| Width | Cache | Previous prototype | Updated prototype |
+| --- | --- | ---: | ---: |
+| 64 | Cold | 2389.046 | 1037.541 |
+| 64 | Warm disk cache | 185.450 | 197.316 |
+| 8 | Cold | 555.760 | 589.500 |
+| 8 | Warm disk cache | 128.575 | 129.618 |
+
+The wide cold case improved by about **2.3x**, with no additional requests or
+connections: both versions fetched 258 POMs over 20 connections. The small cold
+case was about 6% slower, and the wide warm case about 12 ms slower. These results
+favor the targeted wide, cold workload, not every resolution. Cold cases are the
+priority; concurrency, depth, and candidate caps were deliberately not increased.
+
+All 24 final samples matched selected components and dependency edges, with zero
+unresolved dependencies. Warm samples made no HTTP requests. Final raw results
+are retained locally under `build/metadata-lookahead-benchmark/` in
+`run-uo2ewqze/results.json` (width 64) and `run-9nf9y4jv/results.json` (width 8).
+These remain synthetic, cold-JVM measurements, not actual IDE sync results.
+Validation passed 55 focused unit cases, six HTTP integration cases, checkstyle,
+and Python harness self-checks.
+
+### Next experiments (not implemented)
+
+1. Measure a real cold IDE import with repository latency and build-operation
+   traces before further tuning. Include multiple configurations and artifacts,
+   which this metadata-only harness does not represent.
+2. Prioritize likely selected variants in the backlog to spend the same candidate
+   budget on more useful metadata; retain fallbacks for legacy variants and test
+   substitutions, exclusions, and metadata rules carefully.
+3. Evaluate latency-aware depth/concurrency only after measuring useful prefetches
+   versus unused work. Do not simply raise HTTP connection limits: this change's
+   wide-case gain already uses the same 20 pooled connections.

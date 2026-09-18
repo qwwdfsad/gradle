@@ -40,6 +40,8 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -59,11 +61,14 @@ final class OptimisticMetadataResolver implements ComponentMetaDataResolver {
     private final int maxPending;
     private final int maxCandidates;
     // Guard queue lifecycle and admission together: workers must not submit after runAll's action returns.
-    private final Set<ModuleComponentIdentifier> scheduled = new HashSet<>();
+    private final Set<ModuleComponentIdentifier> candidates = new HashSet<>();
+    private final Set<ModuleComponentIdentifier> cheapCandidates = new HashSet<>();
     private final Set<ComponentIdentifier> demanded = new HashSet<>();
+    private final Deque<PrefetchOperation> waiting = new ArrayDeque<>();
     @Nullable
     private BuildOperationQueue<RunnableBuildOperation> queue;
     private int pending;
+    private int scheduled;
     private final AtomicInteger completed = new AtomicInteger();
     private final AtomicInteger failed = new AtomicInteger();
 
@@ -81,6 +86,7 @@ final class OptimisticMetadataResolver implements ComponentMetaDataResolver {
 
     synchronized void stop() {
         queue = null;
+        waiting.clear();
     }
 
     void prefetch(DependencyMetadata dependency) {
@@ -110,12 +116,40 @@ final class OptimisticMetadataResolver implements ComponentMetaDataResolver {
         }
         ModuleComponentIdentifier id = DefaultModuleComponentIdentifier.newId(selector.getModuleIdentifier(), parsed.getSelector());
         synchronized (this) {
-            if (queue == null || pending >= maxPending || scheduled.size() >= maxCandidates || scheduled.contains(id)) {
+            if (queue == null || candidates.size() >= maxCandidates || demanded.contains(id) || !candidates.add(id)) {
                 return;
             }
-            scheduled.add(id);
+        }
+        // Keep cache inspection outside the scheduler lock. Cheap metadata is expanded by normal traversal.
+        try {
+            if (delegate.isFetchingMetadataCheap(id)) {
+                synchronized (this) {
+                    cheapCandidates.add(id);
+                }
+                return;
+            }
+        } catch (RuntimeException e) {
+            LOGGER.debug("Could not estimate speculative metadata cost for {}", id, e);
+            return;
+        }
+        synchronized (this) {
+            if (queue == null || demanded.contains(id)) {
+                return;
+            }
+            waiting.addLast(new PrefetchOperation(id, dependency.isTransitive() ? remainingDepth - 1 : 0));
+            schedulePending();
+        }
+    }
+
+    private synchronized void schedulePending() {
+        while (queue != null && pending < maxPending && !waiting.isEmpty()) {
+            PrefetchOperation operation = waiting.removeFirst();
+            if (demanded.contains(operation.id)) {
+                continue;
+            }
             pending++;
-            queue.addUnconstrained(new PrefetchOperation(id, dependency.isTransitive() ? remainingDepth - 1 : 0));
+            scheduled++;
+            queue.addUnconstrained(operation);
         }
     }
 
@@ -131,6 +165,11 @@ final class OptimisticMetadataResolver implements ComponentMetaDataResolver {
 
     @Override
     public boolean isFetchingMetadataCheap(ComponentIdentifier identifier) {
+        synchronized (this) {
+            if (cheapCandidates.contains(identifier)) {
+                return true;
+            }
+        }
         return delegate.isFetchingMetadataCheap(identifier);
     }
 
@@ -168,9 +207,9 @@ final class OptimisticMetadataResolver implements ComponentMetaDataResolver {
     }
 
     synchronized void logStatistics() {
-        long used = scheduled.stream().filter(demanded::contains).count();
-        LOGGER.info("Metadata lookahead: scheduled={}, completed={}, failed={}, demanded={} (depth={}, maxPending={}, maxCandidates={})",
-            scheduled.size(), completed.get(), failed.get(), used, depth, maxPending, maxCandidates);
+        long used = candidates.stream().filter(demanded::contains).count();
+        LOGGER.info("Metadata lookahead: candidates={}, scheduled={}, completed={}, failed={}, demanded={}, cheap={} (depth={}, maxPending={}, maxCandidates={})",
+            candidates.size(), scheduled, completed.get(), failed.get(), used, cheapCandidates.size(), depth, maxPending, maxCandidates);
     }
 
     private class PrefetchOperation implements RunnableBuildOperation {
@@ -187,7 +226,7 @@ final class OptimisticMetadataResolver implements ComponentMetaDataResolver {
             DefaultBuildableComponentResolveResult result = new DefaultBuildableComponentResolveResult();
             try {
                 synchronized (OptimisticMetadataResolver.this) {
-                    if (queue == null) {
+                    if (queue == null || demanded.contains(id)) {
                         return;
                     }
                 }
@@ -204,9 +243,10 @@ final class OptimisticMetadataResolver implements ComponentMetaDataResolver {
             } finally {
                 synchronized (OptimisticMetadataResolver.this) {
                     pending--;
+                    schedulePending();
                 }
             }
-            // Release admission before expanding, so even a one-request window can look ahead transitively.
+            // Refill older candidates first, then expand within the same bounded lookahead budget.
             lookAhead(result, remainingDepth);
         }
 

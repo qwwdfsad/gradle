@@ -112,20 +112,21 @@ class OptimisticMetadataResolverTest extends Specification {
         operations.empty
     }
 
-    def "limits outstanding work and total candidates without blocking admission"() {
+    def "refills outstanding work from a bounded backlog without rediscovering candidates"() {
         resolver = new OptimisticMetadataResolver(delegate, scheme, 2, 1, 2)
         resolver.start(queue)
 
         when:
         resolver.prefetch(dependency("a"))
         resolver.prefetch(dependency("b"))
+        resolver.prefetch(dependency("b"))
+        resolver.prefetch(dependency("c"))
 
         then:
         operations.size() == 1
 
         when:
         operations.remove().run(context)
-        resolver.prefetch(dependency("b"))
 
         then:
         1 * delegate.resolve(id("a"), _, _) >> { identifier, overrides, result -> result.notFound(identifier) }
@@ -137,6 +138,119 @@ class OptimisticMetadataResolverTest extends Specification {
 
         then:
         1 * delegate.resolve(id("b"), _, _) >> { identifier, overrides, result -> result.notFound(identifier) }
+        operations.empty
+    }
+
+    def "keeps all speculative children when the outstanding window is full"() {
+        resolver = new OptimisticMetadataResolver(delegate, scheme, 2, 1, 1024)
+        resolver.start(queue)
+        def metadata = state([dependency("a"), dependency("b"), dependency("c")])
+
+        when:
+        resolver.prefetch(dependency("parent"))
+        operations.remove().run(context)
+
+        then:
+        1 * delegate.resolve(id("parent"), _, _) >> { identifier, overrides, result ->
+            result.resolved(metadata, ComponentGraphSpecificResolveState.EMPTY_STATE)
+        }
+        operations.size() == 1
+
+        when:
+        operations.remove().run(context)
+
+        then:
+        1 * delegate.resolve(id("a"), _, _) >> { identifier, overrides, result -> result.notFound(identifier) }
+        operations.size() == 1
+
+        when:
+        operations.remove().run(context)
+
+        then:
+        1 * delegate.resolve(id("b"), _, _) >> { identifier, overrides, result -> result.notFound(identifier) }
+        operations.size() == 1
+
+        when:
+        operations.remove().run(context)
+
+        then:
+        1 * delegate.resolve(id("c"), _, _) >> { identifier, overrides, result -> result.notFound(identifier) }
+        operations.empty
+    }
+
+    def "reuses cheap metadata estimates without submitting speculative tasks but expands on demand"() {
+        def metadata = state([dependency("child")])
+
+        when:
+        resolver.prefetch(dependency("parent"))
+        resolver.prefetch(dependency("parent"))
+
+        then:
+        1 * delegate.isFetchingMetadataCheap(id("parent")) >> true
+        resolver.isFetchingMetadataCheap(id("parent"))
+        resolver.isFetchingMetadataCheap(id("parent"))
+        0 * delegate.resolve(_, _, _)
+        operations.empty
+
+        when:
+        resolver.resolve(id("parent"), DefaultComponentOverrideMetadata.EMPTY, new DefaultBuildableComponentResolveResult())
+
+        then:
+        1 * delegate.resolve(id("parent"), _, _) >> { identifier, overrides, result ->
+            result.resolved(metadata, ComponentGraphSpecificResolveState.EMPTY_STATE)
+        }
+        operations.size() == 1
+    }
+
+    def "does not retain expensive metadata estimates after the cache is warmed"() {
+        when:
+        resolver.prefetch(dependency("a"))
+
+        then:
+        1 * delegate.isFetchingMetadataCheap(id("a")) >> false
+        operations.size() == 1
+
+        when:
+        def cheap = resolver.isFetchingMetadataCheap(id("a"))
+
+        then:
+        1 * delegate.isFetchingMetadataCheap(id("a")) >> true
+        cheap
+    }
+
+    def "skips queued and backlogged candidates taken over by demand resolution"() {
+        resolver = new OptimisticMetadataResolver(delegate, scheme, 2, 1, 1024)
+        resolver.start(queue)
+        resolver.prefetch(dependency("a"))
+        resolver.prefetch(dependency("b"))
+        resolver.prefetch(dependency("c"))
+
+        when:
+        resolver.resolve(id("a"), DefaultComponentOverrideMetadata.EMPTY, new DefaultBuildableComponentResolveResult())
+        resolver.resolve(id("b"), DefaultComponentOverrideMetadata.EMPTY, new DefaultBuildableComponentResolveResult())
+        operations.remove().run(context)
+
+        then:
+        1 * delegate.resolve(id("a"), _, _) >> { identifier, overrides, result -> result.notFound(identifier) }
+        1 * delegate.resolve(id("b"), _, _) >> { identifier, overrides, result -> result.notFound(identifier) }
+        operations.size() == 1
+
+        when:
+        operations.remove().run(context)
+        resolver.prefetch(dependency("b"))
+
+        then:
+        1 * delegate.resolve(id("c"), _, _) >> { identifier, overrides, result -> result.notFound(identifier) }
+        operations.empty
+    }
+
+    def "does not prefetch metadata already demanded before it was discovered"() {
+        when:
+        resolver.resolve(id("a"), DefaultComponentOverrideMetadata.EMPTY, new DefaultBuildableComponentResolveResult())
+        resolver.prefetch(dependency("a"))
+
+        then:
+        1 * delegate.resolve(id("a"), _, _) >> { identifier, overrides, result -> result.notFound(identifier) }
         operations.empty
     }
 
@@ -197,15 +311,59 @@ class OptimisticMetadataResolverTest extends Specification {
     }
 
     def "stopping skips queued work and prevents new submissions"() {
+        resolver = new OptimisticMetadataResolver(delegate, scheme, 2, 1, 1024)
+        resolver.start(queue)
+
         when:
         resolver.prefetch(dependency("a"))
+        resolver.prefetch(dependency("b"))
         resolver.stop()
         operations.remove().run(context)
-        resolver.prefetch(dependency("b"))
+        resolver.prefetch(dependency("c"))
 
         then:
         operations.empty
+        1 * delegate.isFetchingMetadataCheap(id("a")) >> false
+        1 * delegate.isFetchingMetadataCheap(id("b")) >> false
         0 * delegate._
+    }
+
+    def "refills the backlog after a speculative exception"() {
+        resolver = new OptimisticMetadataResolver(delegate, scheme, 2, 1, 1024)
+        resolver.start(queue)
+        resolver.prefetch(dependency("a"))
+        resolver.prefetch(dependency("b"))
+
+        when:
+        operations.remove().run(context)
+
+        then:
+        1 * delegate.resolve(id("a"), _, _) >> { throw new IllegalStateException("speculative failure") }
+        operations.size() == 1
+
+        when:
+        operations.remove().run(context)
+
+        then:
+        1 * delegate.resolve(id("b"), _, _) >> { identifier, overrides, result -> result.notFound(identifier) }
+        operations.empty
+    }
+
+    def "ignores speculative cost estimation failures without affecting normal resolution"() {
+        when:
+        resolver.prefetch(dependency("a"))
+
+        then:
+        1 * delegate.isFetchingMetadataCheap(id("a")) >> { throw new IllegalStateException("cost unavailable") }
+        operations.empty
+
+        when:
+        def result = new DefaultBuildableComponentResolveResult()
+        resolver.resolve(id("a"), DefaultComponentOverrideMetadata.EMPTY, result)
+
+        then:
+        1 * delegate.resolve(id("a"), _, _) >> { identifier, overrides, target -> target.notFound(identifier) }
+        result.failure != null
     }
 
     def "stopping during a request prevents recursive submission"() {

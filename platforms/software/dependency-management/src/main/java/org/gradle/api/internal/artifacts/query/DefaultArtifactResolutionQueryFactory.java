@@ -22,6 +22,8 @@ import org.gradle.api.internal.artifacts.dsl.ComponentMetadataHandlerInternal;
 import org.gradle.api.internal.artifacts.dsl.ComponentMetadataRulesSupplier;
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.ExternalModuleComponentResolverFactory;
 import org.gradle.api.internal.component.ComponentTypeRegistry;
+import org.gradle.internal.operations.BuildOperationExecutor;
+import org.gradle.internal.work.WorkerLeaseService;
 
 import javax.inject.Inject;
 
@@ -33,6 +35,8 @@ public class DefaultArtifactResolutionQueryFactory implements ArtifactResolution
     private final ComponentMetadataRulesSupplier componentMetadataRulesSupplier;
     private final ComponentMetadataHandlerInternal componentMetadataHandler;
     private final ComponentTypeRegistry componentTypeRegistry;
+    private final BuildOperationExecutor buildOperationExecutor;
+    private final WorkerLeaseService workerLeaseService;
 
     @Inject
     public DefaultArtifactResolutionQueryFactory(
@@ -41,7 +45,9 @@ public class DefaultArtifactResolutionQueryFactory implements ArtifactResolution
         ExternalModuleComponentResolverFactory ivyFactory,
         ComponentMetadataRulesSupplier componentMetadataRulesSupplier,
         ComponentMetadataHandlerInternal componentMetadataHandler,
-        ComponentTypeRegistry componentTypeRegistry
+        ComponentTypeRegistry componentTypeRegistry,
+        BuildOperationExecutor buildOperationExecutor,
+        WorkerLeaseService workerLeaseService
     ) {
         this.resolutionStrategyFactory = resolutionStrategyFactory;
         this.repositoriesSupplier = repositoriesSupplier;
@@ -49,6 +55,8 @@ public class DefaultArtifactResolutionQueryFactory implements ArtifactResolution
         this.componentMetadataRulesSupplier = componentMetadataRulesSupplier;
         this.componentMetadataHandler = componentMetadataHandler;
         this.componentTypeRegistry = componentTypeRegistry;
+        this.buildOperationExecutor = buildOperationExecutor;
+        this.workerLeaseService = workerLeaseService;
     }
 
     @Override
@@ -59,7 +67,9 @@ public class DefaultArtifactResolutionQueryFactory implements ArtifactResolution
             ivyFactory,
             componentMetadataRulesSupplier,
             componentMetadataHandler,
-            componentTypeRegistry
+            componentTypeRegistry,
+            buildOperationExecutor,
+            workerLeaseService
         );
     }
 

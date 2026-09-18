@@ -131,6 +131,54 @@ class OptimisticMetadataResolutionIntegrationTest extends AbstractHttpDependency
         format << ['pom', 'module']
     }
 
+    def "JVM lookahead skips native metadata while fetching useful children before a blocked sibling"() {
+        given:
+        def child = mavenRepo.module('test', 'child-jvm', '1.0').withModuleMetadata().publish()
+        def parent = mavenRepo.module('test', 'parent', '1.0').withModuleMetadata().withoutDefaultVariants()
+            .variant('mingw', ['org.jetbrains.kotlin.platform.type': 'native']) {
+                dependsOn('test', 'child-mingwx64', '1.0')
+            }
+            .variant('jvm', ['org.jetbrains.kotlin.platform.type': 'jvm']) {
+                dependsOn('test', 'child-jvm', '1.0')
+            }.publish()
+        def sibling = mavenRepo.module('test', 'sibling', '1.0').withModuleMetadata().publish()
+        buildFile << """
+            repositories.withType(MavenArtifactRepository).configureEach { repository ->
+                repository.metadataSources { gradleMetadata() }
+            }
+            configurations.conf.attributes {
+                attribute(Attribute.of('org.jetbrains.kotlin.platform.type', String), 'jvm')
+                attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage, Usage.JAVA_RUNTIME))
+            }
+            dependencies {
+                conf 'test:parent:1.0'
+                conf 'test:sibling:1.0'
+            }
+        """
+        def roots = blockingServer.expectConcurrentAndBlock(
+            blockingServer.get(parent.moduleMetadata.path).sendFile(parent.moduleMetadata.file),
+            blockingServer.get(sibling.moduleMetadata.path).sendFile(sibling.moduleMetadata.file)
+        )
+        // Any request for child-mingwx64 (or for artifacts) is unexpected and fails the test.
+        def childRequest = blockingServer.expectAndBlock(
+            blockingServer.get(child.moduleMetadata.path).sendFile(child.moduleMetadata.file)
+        )
+
+        when:
+        executer.withArguments('--max-workers=1', '-Dorg.gradle.internal.resolve.metadata.lookahead.maxPending=1')
+        def build = executer.withTasks('resolve').start()
+        roots.waitForAllPendingCalls()
+        roots.release(parent.moduleMetadata.path)
+        childRequest.waitForAllPendingCalls()
+        childRequest.releaseAll()
+        roots.release(sibling.moduleMetadata.path)
+        def result = build.waitForFinish()
+
+        then:
+        result.assertOutputContains('components: [test:child-jvm:1.0, test:parent:1.0, test:sibling:1.0]')
+        result.assertOutputContains('unresolved: []')
+    }
+
     def "can opt out of speculative metadata for a conflict loser"() {
         given:
         def winner = mavenRepo.module('test', 'lib', '2.0').publish()

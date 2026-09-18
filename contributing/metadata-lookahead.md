@@ -16,10 +16,17 @@ Lookahead is enabled by default. Set the internal system property
 
 Numeric values are clamped to a minimum of one. The graph hook seeds exact
 dependencies after substitution but before version selection. A wrapper around
-normal metadata resolution and speculative completion examines all external
+normal metadata resolution and speculative completion examines compatible external
 variants, recursively scheduling metadata work up to the depth and candidate
 budget. Constraints, project dependencies, changing declarations, explicit
 artifact dependencies, and dynamic versions are skipped.
+
+Variant compatibility uses the immutable root consumer attributes and the merged
+consumer/producer attribute schemas. Missing attributes remain eligible; no
+disambiguation is performed. These are prediction hints, not authoritative
+selection: dependency-specific attributes, substitutions and exclusions still
+apply during normal traversal. In particular, a JVM import no longer speculates
+into explicitly incompatible native variants of multiplatform modules.
 
 Normal graph traversal is unchanged. Speculation uses the normal repository
 caches and single-flight resolver. Before graph resolution returns, it stops
@@ -57,7 +64,7 @@ admission and the HTTP pool limits remain unchanged.
 
 ### Caveats
 
-* Transitive speculation ignores variant selection, substitutions, and exclusions.
+* Transitive speculation only approximates variant selection and ignores substitutions and exclusions.
   It can execute metadata rules for unused versions and variants.
 * Speculative failures are ignored locally, but underlying repository failures,
   repository disabling, or dependency verification can still have side effects.
@@ -243,7 +250,9 @@ cache-backed resource access and pooled HTTP connections, not new HTTP clients.
 
 Opt out with `-Dorg.gradle.internal.resolve.metadata.parallelRedirect=false`
 (default **true**). For remote HTTP(S) Maven repositories using POM redirection,
-download the POM and `.module` resource concurrently, then parse the POM and follow
+first observe an authoritative POM redirect for a publisher group in that metadata
+source. Subsequent requests in the group download the POM and `.module` resource
+concurrently, then parse the POM and follow
 its redirection marker normally. Unused module metadata is never parsed; an unused
 download failure does not become an authoritative resolution failure. A missing
 redirected module still permits normal POM fallback. Each resource result is reused
@@ -254,9 +263,14 @@ are occupied, use normal sequential resolution without waiting for admission.
 Snapshots, file repositories, explicit module-first sources,
 and `ignoreGradleMetadataRedirection()` retain their existing path.
 
-This remains experimental: POM-only publishers incur an additional
-missing `.module` request, a slow unused response delays parsing, and speculative
-transport/cache side effects are still possible. Limits are not build-global.
+Unknown and POM-only groups use sequential authoritative resolution without a
+speculative module probe. A nonredirecting POM or missing speculative module
+revokes the hint; a subsequent authoritative redirect can teach it again. Hints
+are isolated per metadata-source instance and group, not shared across repositories.
+This remains experimental: mixed groups can still incur an extra missing `.module`
+request, a slow unused response delays parsing, and speculative transport/cache
+side effects are still possible. Limits are not build-global. The original
+measurements below predate this adaptive eligibility policy.
 
 ### Imported BOM prefetch
 
@@ -383,6 +397,117 @@ under `build/metadata-lookahead-benchmark`:
 
 Validation: 144 focused unit tests and 30 HTTP integration cases passed, plus
 dependency-management main/test/integration checkstyle and benchmark self-checks.
-This is not a full Gradle test-suite run. IDE sync, public/corporate repositories,
+This is not a full Gradle test-suite run. At that stage, IDE sync, public/corporate repositories,
 connection-queue time, detailed demand-blocked time, and unused-download drain
-time have not been measured.
+time had not been measured. The following section covers subsequent real-import measurements.
+
+## Coroutines cold IDEA import (2026-09-18)
+
+Investigated the supplied `kotlinx.coroutines/benchmark-idea-sync-cold3.sh`, using
+its existing project, repositories, IDEA installation and scenario. No repository
+filters, dependency changes, cache warming, or benchmark-script changes were used.
+Both binaries identify as `9.9.0`; the baseline is branch commit `2c0cfe69b21`
+with all three preceding optimizations enabled, **not stock Gradle**.
+
+### Causes and changes
+
+* Unconditional POM/module overlap probes missing modules even in repositories
+  that do not own the component. The original trace made 159 missing module
+  downloads to Google Maven and 34 to JetBrains Space. The new learned-group
+  eligibility removes all of those module probes in this trace without changing
+  authoritative repository order or POM redirection.
+* All-variant lookahead fetched metadata for incompatible KMP platforms, including
+  `kotlin-logging-mingwx64` in a JVM graph. Consumer/producer attribute compatibility
+  now filters speculative expansion; normal variant selection remains authoritative.
+* `DefaultArtifactResolutionQuery` retrieved source/documentation artifacts one
+  component at a time. It now retrieves requested artifacts in bounded batches of
+  eight components, using existing resolvers and caches. Metadata preparation,
+  type mapping, explicit verification/result assembly and output ordering remain
+  on the caller; only artifact discovery/downloads run concurrently. There are no
+  additional requested artifacts. Queries with zero/one component or no artifact
+  types avoid scheduling. Opt out with
+  `-Dorg.gradle.internal.resolve.artifacts.parallelQuery=false`.
+
+All optimizations remain enabled by default. Source-query batching is per query,
+not a build-global admission limit. Existing transport/cache/repository failure
+side effects are still possible for concurrently running operations. The earlier
+prototype caveats above still apply.
+
+### Measurements
+
+For the main comparison, ran three cold pairs in alternating order: old/new,
+new/old, old/new. Each run used the same cold scenario with `--single-shot`, no
+profiling, and no concurrent builds. Between distribution swaps, replaced the ZIP
+and removed the disposable `gradle-user-home` so the wrapper could not reuse the
+previous binary. The scenario clears the user home, project caches and IDEA caches
+before each import, and starts a cold daemon.
+
+| Pair | Old total / Gradle (s) | New total / Gradle (s) |
+| --- | ---: | ---: |
+| 1 | 151.686 / 124.954 | 114.785 / 97.230 |
+| 2 | 128.626 / 108.516 | 118.643 / 97.923 |
+| 3 | 131.778 / 109.397 | 127.045 / 103.290 |
+| **Median** | **131.778 / 109.397** | **118.643 / 97.923** |
+
+This is **10.0% lower total sync time** and **10.5% lower Gradle time** at the
+median, not a multi-fold speedup. All three pairs improved, but the last pair
+improved less. Public-network latency and IDEA time vary substantially; three
+pairs are not a statistical guarantee or evidence for all projects.
+
+The exact supplied script (one warm-up, three measured imports, all cold) then
+passed unchanged: measured total times **121.995, 118.742, 119.305 s**, Gradle
+times **100.142, 98.156, 98.735 s**. Median: **119.305 / 98.735 s**.
+Earlier old-binary script runs had medians of 140.0 and 126.3 s, illustrating why
+the initial before/after result alone was insufficient. Do not attribute that
+entire initial difference to these changes.
+
+Separate single-import operation traces recorded:
+
+| Operation metric | Old defaults | New defaults |
+| --- | ---: | ---: |
+| HTTP download operations (including misses; excluding HEAD) | 1784 | 912 |
+| HTTP metadata-check operations | 503 | 497 |
+| Google Maven missing module downloads | 159 | 0 |
+| JetBrains Space missing module downloads | 34 | 0 |
+| Configuration-resolution cumulative time (s) | 24.775 | 20.748 |
+| HTTP metadata-check wall-time union (s) | 24.188 | 18.089 |
+
+Download operations fell **48.9%**. This is not a claim that transferred bytes or
+total network time halved: the large required JAR downloads are unchanged. Trace
+timings are diagnostic single samples, excluded from the paired timing results.
+All **247** configuration-resolution summaries matched across old/new traces,
+including component records, requested attributes and resolved-dependency counts,
+after normalizing temporary precompiled-accessor build names. This is not a full
+IDE model/edge-by-edge equivalence proof.
+
+### Reproduction and artifacts
+
+From the Gradle checkout (preserve the old ZIP before overwriting it):
+
+```shell
+./gradlew :distributions-full:binDistributionZip -PfinalRelease=true
+COROUTINES=/Users/Sebastian.Sellmair/JetBrainsProjects/kotlinx.coroutines
+cp packaging/distributions-full/build/distributions/gradle-9.9.0-bin.zip "$COROUTINES/env/gradle/"
+# This is the benchmark's disposable user home, never the normal ~/.gradle directory.
+rm -rf "$COROUTINES/gradle-user-home"
+"$COROUTINES/benchmark-idea-sync-cold3.sh"
+```
+
+For individual alternating samples, invoke `gradle-profiler --benchmark
+--single-shot` with the script's project/scenario/IDE/sandbox/user-home arguments
+and a unique output directory. Add `--build-ops-trace` only for diagnostic runs;
+the `*-log.txt` is a JSON-lines operation trace.
+
+Local evidence is retained under `build/coroutines-sync-investigation`:
+`alternating-{1,2,3}-{original,final}`, `final-defaults`, `defaults-trace`,
+`final-trace`, `final-summary.txt`, the two distribution ZIPs and analysis scripts.
+The original benchmark output, previous ZIP and previous disposable user home
+were preserved there rather than deleted. The final benchmark output remains in
+coroutines' `benchmark-out`; the final ZIP is installed in `env/gradle`.
+
+Validation: **60 unit tests and 51 integration cases** passed, including existing
+Maven/Ivy artifact-query coverage, single-worker overlap, warm/offline reuse,
+missing/error results, learned hints and compatible/incompatible variants.
+Main/test/integration checkstyle and the full binary ZIP build passed. This is
+not a full Gradle test-suite run. Warm-import performance and isolated attribution
+of each change in the final combined candidate were not measured.

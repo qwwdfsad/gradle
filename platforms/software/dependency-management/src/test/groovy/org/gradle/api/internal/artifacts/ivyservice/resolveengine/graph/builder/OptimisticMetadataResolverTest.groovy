@@ -17,12 +17,18 @@ package org.gradle.api.internal.artifacts.ivyservice.resolveengine.graph.builder
 
 import com.google.common.collect.ImmutableList
 import org.gradle.api.artifacts.component.ProjectComponentSelector
+import org.gradle.api.attributes.Attribute
+import org.gradle.api.attributes.AttributeCompatibilityRule
+import org.gradle.api.attributes.CompatibilityCheckDetails
 import org.gradle.api.internal.artifacts.DefaultModuleIdentifier
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.strategy.DefaultVersionComparator
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.strategy.DefaultVersionSelectorScheme
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.strategy.VersionParser
+import org.gradle.api.internal.attributes.ImmutableAttributes
+import org.gradle.api.internal.attributes.immutable.ImmutableAttributesSchema
 import org.gradle.internal.component.external.model.DefaultModuleComponentIdentifier
 import org.gradle.internal.component.external.model.DefaultModuleComponentSelector
+import org.gradle.internal.component.external.model.ExternalModuleComponentGraphResolveMetadata
 import org.gradle.internal.component.external.model.ExternalModuleComponentGraphResolveState
 import org.gradle.internal.component.model.ComponentGraphSpecificResolveState
 import org.gradle.internal.component.model.DefaultComponentOverrideMetadata
@@ -36,6 +42,7 @@ import org.gradle.internal.operations.RunnableBuildOperation
 import org.gradle.internal.resolve.resolver.ComponentMetaDataResolver
 import org.gradle.internal.resolve.result.BuildableComponentResolveResult
 import org.gradle.internal.resolve.result.DefaultBuildableComponentResolveResult
+import org.gradle.util.AttributeTestUtil
 import spock.lang.Specification
 
 class OptimisticMetadataResolverTest extends Specification {
@@ -45,7 +52,7 @@ class OptimisticMetadataResolverTest extends Specification {
     def queue = Stub(BuildOperationQueue) {
         addUnconstrained(_) >> { RunnableBuildOperation operation -> operations.add(operation) }
     }
-    def resolver = new OptimisticMetadataResolver(delegate, scheme, 2, 32, 1024)
+    def resolver = newResolver()
     def context = Stub(BuildOperationContext)
 
     def setup() {
@@ -53,7 +60,7 @@ class OptimisticMetadataResolverTest extends Specification {
     }
 
     def "looks ahead into metadata before any component is demanded and deduplicates cycles"() {
-        resolver = new OptimisticMetadataResolver(delegate, scheme, 3, 1, 1024)
+        resolver = newResolver(3, 1, 1024)
         resolver.start(queue)
         def a = dependency("a")
         def b = dependency("b")
@@ -83,7 +90,7 @@ class OptimisticMetadataResolverTest extends Specification {
     }
 
     def "limits recursive depth"() {
-        resolver = new OptimisticMetadataResolver(delegate, scheme, 1, 32, 1024)
+        resolver = newResolver(1, 32, 1024)
         resolver.start(queue)
         def metadata = state([dependency("child")])
 
@@ -113,7 +120,7 @@ class OptimisticMetadataResolverTest extends Specification {
     }
 
     def "refills outstanding work from a bounded backlog without rediscovering candidates"() {
-        resolver = new OptimisticMetadataResolver(delegate, scheme, 2, 1, 2)
+        resolver = newResolver(2, 1, 2)
         resolver.start(queue)
 
         when:
@@ -142,7 +149,7 @@ class OptimisticMetadataResolverTest extends Specification {
     }
 
     def "keeps all speculative children when the outstanding window is full"() {
-        resolver = new OptimisticMetadataResolver(delegate, scheme, 2, 1, 1024)
+        resolver = newResolver(2, 1, 1024)
         resolver.start(queue)
         def metadata = state([dependency("a"), dependency("b"), dependency("c")])
 
@@ -219,7 +226,7 @@ class OptimisticMetadataResolverTest extends Specification {
     }
 
     def "skips queued and backlogged candidates taken over by demand resolution"() {
-        resolver = new OptimisticMetadataResolver(delegate, scheme, 2, 1, 1024)
+        resolver = newResolver(2, 1, 1024)
         resolver.start(queue)
         resolver.prefetch(dependency("a"))
         resolver.prefetch(dependency("b"))
@@ -311,7 +318,7 @@ class OptimisticMetadataResolverTest extends Specification {
     }
 
     def "stopping skips queued work and prevents new submissions"() {
-        resolver = new OptimisticMetadataResolver(delegate, scheme, 2, 1, 1024)
+        resolver = newResolver(2, 1, 1024)
         resolver.start(queue)
 
         when:
@@ -329,7 +336,7 @@ class OptimisticMetadataResolverTest extends Specification {
     }
 
     def "refills the backlog after a speculative exception"() {
-        resolver = new OptimisticMetadataResolver(delegate, scheme, 2, 1, 1024)
+        resolver = newResolver(2, 1, 1024)
         resolver.start(queue)
         resolver.prefetch(dependency("a"))
         resolver.prefetch(dependency("b"))
@@ -398,14 +405,13 @@ class OptimisticMetadataResolverTest extends Specification {
         operations.empty
     }
 
-    def "demanded metadata seeds lookahead for every attribute matching variant"() {
+    def "demanded metadata seeds lookahead for every compatible variant without disambiguation"() {
         def result = new DefaultBuildableComponentResolveResult()
-        def variants = [variant([dependency("a")]), variant([dependency("b"), dependency("a")])]
-        def metadata = Stub(ExternalModuleComponentGraphResolveState) {
-            getCandidatesForGraphVariantSelection() >> Stub(GraphSelectionCandidates) {
-                getVariantsForAttributeMatching() >> variants
-            }
-        }
+        def variants = [
+            variant([dependency("a")], AttributeTestUtil.attributes(platform: 'jvm')),
+            variant([dependency("b"), dependency("a")])
+        ]
+        def metadata = variantState(variants)
 
         when:
         resolver.resolve(id("parent"), DefaultComponentOverrideMetadata.EMPTY, result)
@@ -415,6 +421,133 @@ class OptimisticMetadataResolverTest extends Specification {
             target.resolved(metadata, ComponentGraphSpecificResolveState.EMPTY_STATE)
         }
         operations.size() == 2
+    }
+
+    def "filters #candidateAttributes for #consumerAttributes on demanded=#demanded metadata"() {
+        def consumer = AttributeTestUtil.attributes(consumerAttributes)
+        resolver = newResolver(2, 32, 1024, consumer)
+        resolver.start(queue)
+        def child = variant([dependency("child")], AttributeTestUtil.attributes(candidateAttributes))
+        def metadata = variantState([child])
+        def result = new DefaultBuildableComponentResolveResult()
+
+        when:
+        if (demanded) {
+            resolver.resolve(id("parent"), DefaultComponentOverrideMetadata.EMPTY, result)
+        } else {
+            resolver.prefetch(dependency("parent"))
+            operations.remove().run(context)
+        }
+
+        then:
+        1 * delegate.resolve(id("parent"), _, _) >> { identifier, overrides, target ->
+            target.resolved(metadata, ComponentGraphSpecificResolveState.EMPTY_STATE)
+        }
+        operations.size() == expected
+        !demanded || result.state == metadata
+
+        when:
+        while (!operations.empty) {
+            operations.remove().run(context)
+        }
+
+        then:
+        expected * delegate.resolve(id("child"), _, _) >> { identifier, overrides, target -> target.notFound(identifier) }
+        0 * delegate.resolve(_, _, _)
+
+        where:
+        demanded | consumerAttributes | candidateAttributes     | expected
+        true     | [platform: 'jvm']  | [platform: 'jvm']       | 1
+        true     | [platform: 'jvm']  | [platform: 'native']    | 0
+        true     | [platform: 'jvm']  | [:]                    | 1
+        true     | [platform: 'jvm']  | [usage: 'java-runtime'] | 1
+        true     | [:]               | [platform: 'native']    | 1
+        false    | [platform: 'jvm']  | [platform: 'jvm']       | 1
+        false    | [platform: 'jvm']  | [platform: 'native']    | 0
+        false    | [platform: 'jvm']  | [:]                    | 1
+        false    | [platform: 'jvm']  | [usage: 'java-runtime'] | 1
+        false    | [:]               | [platform: 'native']    | 1
+    }
+
+    def "honors compatibility rules from the #ruleSource schema"() {
+        def schema = AttributeTestUtil.immutableSchema {
+            attribute(Attribute.of('platform', String)).compatibilityRules.add(JvmCompatibilityRule)
+        }
+        resolver = newResolver(2, 32, 1024, AttributeTestUtil.attributes(platform: 'jvm'),
+            ruleSource == 'consumer' ? schema : ImmutableAttributesSchema.EMPTY)
+        resolver.start(queue)
+        def metadata = variantState(
+            [variant([dependency("child")], AttributeTestUtil.attributes(platform: 'common'))],
+            ruleSource == 'producer' ? schema : ImmutableAttributesSchema.EMPTY
+        )
+
+        when:
+        resolver.resolve(id("parent"), DefaultComponentOverrideMetadata.EMPTY, new DefaultBuildableComponentResolveResult())
+
+        then:
+        1 * delegate.resolve(id("parent"), _, _) >> { identifier, overrides, target ->
+            target.resolved(metadata, ComponentGraphSpecificResolveState.EMPTY_STATE)
+        }
+        operations.size() == 1
+
+        where:
+        ruleSource << ['consumer', 'producer']
+    }
+
+    def "does not fall back to legacy metadata when all attribute matching variants are incompatible"() {
+        def incompatible = Mock(VariantGraphResolveState) {
+            getAttributes() >> AttributeTestUtil.attributes(platform: 'native')
+        }
+        def selectionCandidates = Mock(GraphSelectionCandidates) {
+            getVariantsForAttributeMatching() >> [incompatible]
+        }
+        def metadata = Stub(ExternalModuleComponentGraphResolveState) {
+            getMetadata() >> Stub(ExternalModuleComponentGraphResolveMetadata) {
+                getAttributesSchema() >> ImmutableAttributesSchema.EMPTY
+            }
+            getCandidatesForGraphVariantSelection() >> selectionCandidates
+        }
+
+        when:
+        resolver.resolve(id("parent"), DefaultComponentOverrideMetadata.EMPTY, new DefaultBuildableComponentResolveResult())
+
+        then:
+        1 * delegate.resolve(id("parent"), _, _) >> { identifier, overrides, target ->
+            target.resolved(metadata, ComponentGraphSpecificResolveState.EMPTY_STATE)
+        }
+        0 * incompatible.getDependencies()
+        0 * selectionCandidates.getLegacyVariant()
+        operations.empty
+    }
+
+    static class JvmCompatibilityRule implements AttributeCompatibilityRule<String> {
+        @Override
+        void execute(CompatibilityCheckDetails<String> details) {
+            if (details.consumerValue == 'jvm' && details.producerValue == 'common') {
+                details.compatible()
+            }
+        }
+    }
+
+    private OptimisticMetadataResolver newResolver(
+        int depth = 2,
+        int maxPending = 32,
+        int maxCandidates = 1024,
+        ImmutableAttributes consumerAttributes = AttributeTestUtil.attributes(platform: 'jvm'),
+        ImmutableAttributesSchema consumerSchema = ImmutableAttributesSchema.EMPTY
+    ) {
+        new OptimisticMetadataResolver(delegate, scheme, consumerAttributes, consumerSchema, AttributeTestUtil.services(), depth, maxPending, maxCandidates)
+    }
+
+    private ExternalModuleComponentGraphResolveState variantState(List<VariantGraphResolveState> variants, ImmutableAttributesSchema producerSchema = ImmutableAttributesSchema.EMPTY) {
+        Stub(ExternalModuleComponentGraphResolveState) {
+            getMetadata() >> Stub(ExternalModuleComponentGraphResolveMetadata) {
+                getAttributesSchema() >> producerSchema
+            }
+            getCandidatesForGraphVariantSelection() >> Stub(GraphSelectionCandidates) {
+                getVariantsForAttributeMatching() >> variants
+            }
+        }
     }
 
     private DependencyMetadata dependency(String name, String version = "1", boolean transitive = true) {
@@ -429,8 +562,11 @@ class OptimisticMetadataResolverTest extends Specification {
         DefaultModuleComponentIdentifier.newId(DefaultModuleIdentifier.newId("test", name), "1")
     }
 
-    private VariantGraphResolveState variant(List<DependencyMetadata> dependencies) {
-        Stub(VariantGraphResolveState) { getDependencies() >> dependencies }
+    private VariantGraphResolveState variant(List<DependencyMetadata> dependencies, ImmutableAttributes attributes = ImmutableAttributes.EMPTY) {
+        Stub(VariantGraphResolveState) {
+            getAttributes() >> attributes
+            getDependencies() >> dependencies
+        }
     }
 
     private ExternalModuleComponentGraphResolveState state(List<DependencyMetadata> dependencies) {

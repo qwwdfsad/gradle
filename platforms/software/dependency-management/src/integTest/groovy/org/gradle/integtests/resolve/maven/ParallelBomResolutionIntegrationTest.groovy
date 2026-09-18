@@ -93,34 +93,33 @@ class ParallelBomResolutionIntegrationTest extends AbstractHttpDependencyResolut
                 metadataSources { mavenPom() }
             }
         """
-        def library = mavenRepo.module('test', 'library', '1').publish()
+        def child = mavenRepo.module('test', 'child', '1').withModuleMetadata().publish()
+        def library = mavenRepo.module('test', 'library', '1').withModuleMetadata().dependsOn(child).publish()
         def first = mavenRepo.module('test', 'first', '1').hasType('pom').dependencyConstraint(library).publish()
         def second = mavenRepo.module('test', 'second', '1').hasType('pom').publish()
         def root = mavenRepo.module('test', 'root', '1').hasType('pom')
             .dependencyConstraint([type: 'pom', scope: 'import'], first)
             .dependencyConstraint([type: 'pom', scope: 'import'], second).publish()
-        blockingServer.expectConcurrent(
-            blockingServer.get(root.pom.path).sendFile(root.pom.file),
-            blockingServer.get(root.moduleMetadata.path).missing()
-        )
+        blockingServer.expect(blockingServer.get(root.pom.path).sendFile(root.pom.file))
         blockingServer.expectConcurrent(
             blockingServer.get(first.pom.path).sendFile(first.pom.file),
             blockingServer.get(second.pom.path).sendFile(second.pom.file)
         )
-        blockingServer.expect(blockingServer.get(first.moduleMetadata.path).missing())
-        blockingServer.expect(blockingServer.get(second.moduleMetadata.path).missing())
+        blockingServer.expect(blockingServer.get(library.pom.path).sendFile(library.pom.file))
+        blockingServer.expect(blockingServer.get(library.moduleMetadata.path).sendFile(library.moduleMetadata.file))
         blockingServer.expectConcurrent(
-            blockingServer.get(library.pom.path).sendFile(library.pom.file),
-            blockingServer.get(library.moduleMetadata.path).missing()
+            blockingServer.get(child.pom.path).sendFile(child.pom.file),
+            blockingServer.get(child.moduleMetadata.path).sendFile(child.moduleMetadata.file)
         )
         blockingServer.expect(blockingServer.get(library.artifact.path).sendFile(library.artifact.file))
+        blockingServer.expect(blockingServer.get(child.artifact.path).sendFile(child.artifact.file))
 
         when:
         executer.withArguments('--max-workers=1')
         succeeds('resolve')
 
         then:
-        outputContains('files: [library-1.jar]')
+        outputContains('files: [child-1.jar, library-1.jar]')
     }
 
     def "disabled prefetch retains sequential requests and the result remains usable offline"() {

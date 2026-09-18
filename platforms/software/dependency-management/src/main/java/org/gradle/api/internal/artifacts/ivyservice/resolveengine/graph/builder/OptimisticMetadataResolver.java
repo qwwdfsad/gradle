@@ -22,6 +22,10 @@ import org.gradle.api.artifacts.component.ModuleComponentSelector;
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.strategy.ExactVersionSelector;
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.strategy.VersionSelector;
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.strategy.VersionSelectorScheme;
+import org.gradle.api.internal.attributes.AttributeSchemaServices;
+import org.gradle.api.internal.attributes.ImmutableAttributes;
+import org.gradle.api.internal.attributes.immutable.ImmutableAttributesSchema;
+import org.gradle.api.internal.attributes.matching.AttributeMatcher;
 import org.gradle.internal.component.external.model.DefaultModuleComponentIdentifier;
 import org.gradle.internal.component.external.model.ExternalModuleComponentGraphResolveState;
 import org.gradle.internal.component.model.ComponentOverrideMetadata;
@@ -57,6 +61,9 @@ final class OptimisticMetadataResolver implements ComponentMetaDataResolver {
 
     private final ComponentMetaDataResolver delegate;
     private final VersionSelectorScheme versionSelectorScheme;
+    private final ImmutableAttributes consumerAttributes;
+    private final ImmutableAttributesSchema consumerSchema;
+    private final AttributeSchemaServices attributeSchemaServices;
     private final int depth;
     private final int maxPending;
     private final int maxCandidates;
@@ -72,9 +79,21 @@ final class OptimisticMetadataResolver implements ComponentMetaDataResolver {
     private final AtomicInteger completed = new AtomicInteger();
     private final AtomicInteger failed = new AtomicInteger();
 
-    OptimisticMetadataResolver(ComponentMetaDataResolver delegate, VersionSelectorScheme versionSelectorScheme, int depth, int maxPending, int maxCandidates) {
+    OptimisticMetadataResolver(
+        ComponentMetaDataResolver delegate,
+        VersionSelectorScheme versionSelectorScheme,
+        ImmutableAttributes consumerAttributes,
+        ImmutableAttributesSchema consumerSchema,
+        AttributeSchemaServices attributeSchemaServices,
+        int depth,
+        int maxPending,
+        int maxCandidates
+    ) {
         this.delegate = delegate;
         this.versionSelectorScheme = versionSelectorScheme;
+        this.consumerAttributes = consumerAttributes;
+        this.consumerSchema = consumerSchema;
+        this.attributeSchemaServices = attributeSchemaServices;
         this.depth = depth;
         this.maxPending = maxPending;
         this.maxCandidates = maxCandidates;
@@ -185,13 +204,19 @@ final class OptimisticMetadataResolver implements ComponentMetaDataResolver {
             }
             GraphSelectionCandidates candidates = result.getState().getCandidatesForGraphVariantSelection();
             List<? extends VariantGraphResolveState> variants = candidates.getVariantsForAttributeMatching();
-            for (VariantGraphResolveState variant : variants) {
-                prefetchDependencies(variant, remainingDepth);
-            }
             if (variants.isEmpty()) {
                 VariantGraphResolveState legacy = candidates.getLegacyVariant();
                 if (legacy != null) {
                     prefetchDependencies(legacy, remainingDepth);
+                }
+            } else {
+                AttributeMatcher matcher = attributeSchemaServices.getMatcher(consumerSchema, result.getState().getMetadata().getAttributesSchema());
+                for (VariantGraphResolveState variant : variants) {
+                    // Root attributes are only a hint: retain missing attributes and all compatible variants,
+                    // without disambiguation. Normal resolution still honors per-dependency attributes.
+                    if (matcher.isMatchingCandidate(variant.getAttributes(), consumerAttributes)) {
+                        prefetchDependencies(variant, remainingDepth);
+                    }
                 }
             }
         } catch (RuntimeException e) {

@@ -38,12 +38,15 @@ import org.gradle.internal.work.WorkerLeaseService;
 import org.jspecify.annotations.Nullable;
 
 import javax.inject.Inject;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Semaphore;
 
 public class ParallelMavenMetadataSource extends RedirectingGradleMetadataModuleMetadataSource {
     private final BuildOperationExecutor executor;
     private final WorkerLeaseService workerLeaseService;
     private final Semaphore slots = new Semaphore(8);
+    private final ConcurrentMap<String, Boolean> redirectingGroups = new ConcurrentHashMap<>();
 
     @Inject
     public ParallelMavenMetadataSource(MetadataSource<?> pomSource, MetadataSource<MutableModuleComponentResolveMetadata> moduleSource, BuildOperationExecutor executor, WorkerLeaseService workerLeaseService) {
@@ -54,8 +57,14 @@ public class ParallelMavenMetadataSource extends RedirectingGradleMetadataModule
 
     @Override
     public MutableModuleComponentResolveMetadata create(String repositoryName, ComponentResolvers componentResolvers, ModuleComponentIdentifier id, ComponentOverrideMetadata overrides, ExternalResourceArtifactResolver resolver, BuildableModuleComponentMetaDataResolveResult<ModuleComponentResolveMetadata> result) {
-        if (id instanceof MavenUniqueSnapshotComponentIdentifier || id.getVersion().endsWith("-SNAPSHOT") || !slots.tryAcquire()) {
+        if (id instanceof MavenUniqueSnapshotComponentIdentifier || id.getVersion().endsWith("-SNAPSHOT")) {
             return super.create(repositoryName, componentResolvers, id, overrides, resolver, result);
+        }
+        // Learn from authoritative POMs before speculating about a publisher in this repository.
+        if (!Boolean.TRUE.equals(redirectingGroups.get(id.getGroup())) || !slots.tryAcquire()) {
+            MutableModuleComponentResolveMetadata metadata = super.create(repositoryName, componentResolvers, id, overrides, resolver, result);
+            redirectingGroups.put(id.getGroup(), result.shouldUseGradleMetatada());
+            return metadata;
         }
         try {
             Download pom = new Download(new DefaultModuleDescriptorArtifactMetadata(id, new DefaultIvyArtifactName(id.getModule(), "pom", "pom")), resolver);
@@ -82,7 +91,9 @@ public class ParallelMavenMetadataSource extends RedirectingGradleMetadataModule
                     return resolver.artifactExists(artifact, target);
                 }
             };
-            return super.create(repositoryName, componentResolvers, id, overrides, downloaded, result);
+            MutableModuleComponentResolveMetadata metadata = super.create(repositoryName, componentResolvers, id, overrides, downloaded, result);
+            redirectingGroups.put(id.getGroup(), result.shouldUseGradleMetatada() && module.resource != null);
+            return metadata;
         } finally {
             slots.release();
         }

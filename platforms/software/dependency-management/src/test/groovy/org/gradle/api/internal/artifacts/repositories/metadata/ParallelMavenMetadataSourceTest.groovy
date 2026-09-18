@@ -60,6 +60,9 @@ class ParallelMavenMetadataSourceTest extends Specification {
     }
 
     def "downloads once and only parses module metadata when the POM redirects"() {
+        given:
+        learnRedirectingGroup()
+
         when:
         def metadata = source.create('repo', componentResolvers, id, DefaultComponentOverrideMetadata.EMPTY, resolver, result)
 
@@ -91,6 +94,9 @@ class ParallelMavenMetadataSourceTest extends Specification {
     }
 
     def "unused module download failure does not fail POM resolution"() {
+        given:
+        learnRedirectingGroup()
+
         when:
         def metadata = source.create('repo', componentResolvers, id, DefaultComponentOverrideMetadata.EMPTY, resolver, result)
 
@@ -106,6 +112,8 @@ class ParallelMavenMetadataSourceTest extends Specification {
     }
 
     def "redirected module download failure is authoritative"() {
+        given:
+        learnRedirectingGroup()
         def failure = new IllegalStateException('required module')
 
         when:
@@ -127,6 +135,9 @@ class ParallelMavenMetadataSourceTest extends Specification {
     }
 
     def "missing redirected module still falls back to the POM"() {
+        given:
+        learnRedirectingGroup()
+
         when:
         def metadata = source.create('repo', componentResolvers, id, DefaultComponentOverrideMetadata.EMPTY, resolver, result)
 
@@ -146,12 +157,15 @@ class ParallelMavenMetadataSourceTest extends Specification {
     }
 
     def "POM download failure remains authoritative and releases admission"() {
+        given:
+        learnRedirectingGroup()
         def failure = new IllegalStateException('required POM')
 
         when:
         9.times {
             try {
-                source.create('repo', componentResolvers, id, DefaultComponentOverrideMetadata.EMPTY, resolver, result)
+                def identifier = DefaultModuleComponentIdentifier.newId(DefaultModuleIdentifier.newId('test', 'lib'), "$it")
+                source.create('repo', componentResolvers, identifier, DefaultComponentOverrideMetadata.EMPTY, resolver, new DefaultBuildableModuleComponentMetaDataResolveResult())
                 throw new AssertionError('POM failure was ignored')
             } catch (IllegalStateException actual) {
                 assert actual.is(failure)
@@ -159,15 +173,169 @@ class ParallelMavenMetadataSourceTest extends Specification {
         }
 
         then:
-        9 * resolver.resolveArtifact({ it.id == pom.id }, _) >> { throw failure }
-        9 * resolver.resolveArtifact({ it.id == module.id }, _) >> moduleResource
+        9 * resolver.resolveArtifact({ it.name.extension == 'pom' }, _) >> { throw failure }
+        9 * resolver.resolveArtifact({ it.name.extension == 'module' }, _) >> moduleResource
         9 * pomSource.create(_, _, _, _, _, _) >> { repo, components, identifier, overrides, downloaded, target ->
-            downloaded.resolveArtifact(pom, target)
+            downloaded.resolveArtifact(new DefaultModuleDescriptorArtifactMetadata(identifier, new DefaultIvyArtifactName('lib', 'pom', 'pom')), target)
         }
         0 * moduleSource._
     }
 
+    def "unknown POM only groups never probe module metadata or use a worker"() {
+        given:
+        def sibling = DefaultModuleComponentIdentifier.newId(DefaultModuleIdentifier.newId('test', 'sibling'), '1')
+        def other = DefaultModuleComponentIdentifier.newId(DefaultModuleIdentifier.newId('other', 'lib'), '1')
+
+        when:
+        [id, sibling, other].each { identifier ->
+            source.create('repo', componentResolvers, identifier, DefaultComponentOverrideMetadata.EMPTY, resolver, new DefaultBuildableModuleComponentMetaDataResolveResult())
+        }
+
+        then:
+        3 * pomSource.create('repo', componentResolvers, _, DefaultComponentOverrideMetadata.EMPTY, resolver, _) >> { repo, components, identifier, overrides, downloaded, target ->
+            downloaded.resolveArtifact(new DefaultModuleDescriptorArtifactMetadata(identifier, new DefaultIvyArtifactName(identifier.module, 'pom', 'pom')), target)
+            pomMetadata
+        }
+        3 * resolver.resolveArtifact({ it.name.extension == 'pom' }, _) >> pomResource
+        0 * resolver._
+        0 * moduleSource._
+        0 * workerLeaseService._
+        0 * executor._
+    }
+
+    def "learned groups are isolated by source and publisher group"() {
+        given:
+        learnRedirectingGroup()
+        def otherSource = new ParallelMavenMetadataSource(pomSource, moduleSource, executor, workerLeaseService)
+        def otherGroup = DefaultModuleComponentIdentifier.newId(DefaultModuleIdentifier.newId('other', 'lib'), '1')
+
+        when:
+        def first = otherSource.create('repo', componentResolvers, id, DefaultComponentOverrideMetadata.EMPTY, resolver, result)
+        def second = source.create('repo', componentResolvers, otherGroup, DefaultComponentOverrideMetadata.EMPTY, resolver, new DefaultBuildableModuleComponentMetaDataResolveResult())
+
+        then:
+        1 * pomSource.create('repo', componentResolvers, id, DefaultComponentOverrideMetadata.EMPTY, resolver, result) >> pomMetadata
+        1 * pomSource.create('repo', componentResolvers, otherGroup, DefaultComponentOverrideMetadata.EMPTY, resolver, _) >> pomMetadata
+        0 * moduleSource._
+        0 * resolver._
+        0 * workerLeaseService._
+        0 * executor._
+        first == pomMetadata
+        second == pomMetadata
+    }
+
+    def "an authoritative redirect learns a group even when its module metadata is missing #missing"() {
+        given:
+        def bootstrap = DefaultModuleComponentIdentifier.newId(DefaultModuleIdentifier.newId('test', 'bootstrap'), '1')
+
+        when:
+        def initial = source.create('repo', componentResolvers, bootstrap, DefaultComponentOverrideMetadata.EMPTY, resolver, result)
+
+        then:
+        1 * pomSource.create('repo', componentResolvers, bootstrap, DefaultComponentOverrideMetadata.EMPTY, resolver, result) >> { repo, components, identifier, overrides, downloaded, target ->
+            target.redirectToGradleMetadata()
+            pomMetadata
+        }
+        1 * moduleSource.create('repo', componentResolvers, bootstrap, DefaultComponentOverrideMetadata.EMPTY, resolver, result) >> (missing ? null : moduleMetadata)
+        0 * resolver._
+        0 * workerLeaseService._
+        0 * executor._
+        initial == (missing ? pomMetadata : moduleMetadata)
+
+        when:
+        def metadata = source.create('repo', componentResolvers, id, DefaultComponentOverrideMetadata.EMPTY, resolver, new DefaultBuildableModuleComponentMetaDataResolveResult())
+
+        then:
+        1 * workerLeaseService.runAsWorkerThread(_ as Runnable) >> { Runnable action -> action.run() }
+        1 * executor.runAll(_) >> { Action action -> action.execute(queue) }
+        2 * queue.addUnconstrained(_) >> { RunnableBuildOperation operation -> operation.run(context) }
+        1 * resolver.resolveArtifact({ it.id == pom.id }, _) >> pomResource
+        1 * resolver.resolveArtifact({ it.id == module.id }, _) >> moduleResource
+        1 * pomSource.create(_, _, id, _, _, _) >> { repo, components, identifier, overrides, downloaded, target ->
+            assert downloaded.resolveArtifact(pom, target) == pomResource
+            target.redirectToGradleMetadata()
+            pomMetadata
+        }
+        1 * moduleSource.create(_, _, id, _, _, _) >> { repo, components, identifier, overrides, downloaded, target ->
+            assert downloaded.resolveArtifact(module, target) == moduleResource
+            moduleMetadata
+        }
+        0 * resolver._
+        metadata == moduleMetadata
+
+        where:
+        missing << [false, true]
+    }
+
+    def "overlap revokes the hint when redirect is #redirect and module is missing #missing but a later redirect relearns it"() {
+        given:
+        learnRedirectingGroup()
+
+        when:
+        def metadata = source.create('repo', componentResolvers, id, DefaultComponentOverrideMetadata.EMPTY, resolver, result)
+
+        then:
+        1 * resolver.resolveArtifact({ it.id == pom.id }, _) >> pomResource
+        1 * resolver.resolveArtifact({ it.id == module.id }, _) >> (missing ? null : moduleResource)
+        1 * pomSource.create(_, _, id, _, _, _) >> { repo, components, identifier, overrides, downloaded, target ->
+            assert downloaded.resolveArtifact(pom, target) == pomResource
+            if (redirect) {
+                target.redirectToGradleMetadata()
+            }
+            pomMetadata
+        }
+        (redirect ? 1 : 0) * moduleSource.create(_, _, id, _, _, _) >> { repo, components, identifier, overrides, downloaded, target ->
+            assert downloaded.resolveArtifact(module, target) == null
+            null
+        }
+        0 * resolver._
+        metadata == pomMetadata
+
+        when:
+        def relearned = source.create('repo', componentResolvers, id, DefaultComponentOverrideMetadata.EMPTY, resolver, new DefaultBuildableModuleComponentMetaDataResolveResult())
+
+        then:
+        1 * pomSource.create('repo', componentResolvers, id, DefaultComponentOverrideMetadata.EMPTY, resolver, _) >> { repo, components, identifier, overrides, downloaded, target ->
+            target.redirectToGradleMetadata()
+            pomMetadata
+        }
+        1 * moduleSource.create('repo', componentResolvers, id, DefaultComponentOverrideMetadata.EMPTY, resolver, _) >> moduleMetadata
+        0 * resolver._
+        0 * workerLeaseService._
+        0 * executor._
+        relearned == moduleMetadata
+
+        when:
+        def next = source.create('repo', componentResolvers, id, DefaultComponentOverrideMetadata.EMPTY, resolver, new DefaultBuildableModuleComponentMetaDataResolveResult())
+
+        then:
+        1 * workerLeaseService.runAsWorkerThread(_ as Runnable) >> { Runnable action -> action.run() }
+        1 * executor.runAll(_) >> { Action action -> action.execute(queue) }
+        2 * queue.addUnconstrained(_) >> { RunnableBuildOperation operation -> operation.run(context) }
+        1 * resolver.resolveArtifact({ it.id == pom.id }, _) >> pomResource
+        1 * resolver.resolveArtifact({ it.id == module.id }, _) >> moduleResource
+        1 * pomSource.create(_, _, id, _, _, _) >> { repo, components, identifier, overrides, downloaded, target ->
+            assert downloaded.resolveArtifact(pom, target) == pomResource
+            target.redirectToGradleMetadata()
+            pomMetadata
+        }
+        1 * moduleSource.create(_, _, id, _, _, _) >> { repo, components, identifier, overrides, downloaded, target ->
+            assert downloaded.resolveArtifact(module, target) == moduleResource
+            moduleMetadata
+        }
+        0 * resolver._
+        next == moduleMetadata
+
+        where:
+        redirect | missing
+        false    | false
+        false    | true
+        true     | true
+    }
+
     def "snapshot metadata retains the sequential path"() {
+        given:
+        learnRedirectingGroup()
         def identifier = DefaultModuleComponentIdentifier.newId(DefaultModuleIdentifier.newId('test', 'lib'), version)
         def overrides = changing ? DefaultComponentOverrideMetadata.EMPTY.withChanging() : DefaultComponentOverrideMetadata.EMPTY
 
@@ -183,5 +351,16 @@ class ParallelMavenMetadataSourceTest extends Specification {
         version      | changing
         '1-SNAPSHOT' | false
         '1-SNAPSHOT' | true
+    }
+
+    private void learnRedirectingGroup() {
+        def bootstrap = DefaultModuleComponentIdentifier.newId(DefaultModuleIdentifier.newId('test', 'bootstrap'), '1')
+        def bootstrapResult = new DefaultBuildableModuleComponentMetaDataResolveResult()
+        1 * pomSource.create('repo', componentResolvers, bootstrap, DefaultComponentOverrideMetadata.EMPTY, resolver, bootstrapResult) >> { repo, components, identifier, overrides, downloaded, target ->
+            target.redirectToGradleMetadata()
+            pomMetadata
+        }
+        1 * moduleSource.create('repo', componentResolvers, bootstrap, DefaultComponentOverrideMetadata.EMPTY, resolver, bootstrapResult) >> moduleMetadata
+        assert source.create('repo', componentResolvers, bootstrap, DefaultComponentOverrideMetadata.EMPTY, resolver, bootstrapResult) == moduleMetadata
     }
 }

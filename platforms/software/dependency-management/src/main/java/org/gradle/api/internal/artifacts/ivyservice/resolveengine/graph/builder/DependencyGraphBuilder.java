@@ -138,6 +138,7 @@ public class DependencyGraphBuilder {
     ) {
         OptimisticMetadataResolver lookahead = Boolean.parseBoolean(System.getProperty(OptimisticMetadataResolver.ENABLED_PROPERTY, "true"))
             ? new OptimisticMetadataResolver(componentMetaDataResolver, versionSelectorScheme,
+                rootVariant.getAttributes(), rootComponent.getMetadata().getAttributesSchema(), attributeSchemaServices,
                 Math.max(1, Integer.getInteger(OptimisticMetadataResolver.ENABLED_PROPERTY + ".depth", 2)),
                 Math.max(1, Integer.getInteger(OptimisticMetadataResolver.ENABLED_PROPERTY + ".maxPending", 32)),
                 Math.max(1, Integer.getInteger(OptimisticMetadataResolver.ENABLED_PROPERTY + ".maxCandidates", 1024)))

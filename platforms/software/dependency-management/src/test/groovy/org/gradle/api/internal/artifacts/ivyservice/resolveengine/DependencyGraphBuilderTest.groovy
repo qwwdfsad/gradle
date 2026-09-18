@@ -114,6 +114,9 @@ class DependencyGraphBuilderTest extends Specification {
         runAll(_, _) >> { args ->
             args[0].execute(queue)
         }
+        runAll(_) >> { args ->
+            args[0].execute(queue)
+        }
     }
     def dependencySubstitutionApplicator = new DefaultDependencySubstitutionApplicator(
         DependencyManagementTestUtil.componentSelectionDescriptorFactory(),

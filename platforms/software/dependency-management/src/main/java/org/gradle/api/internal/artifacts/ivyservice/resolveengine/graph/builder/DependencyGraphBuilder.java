@@ -136,12 +136,18 @@ public class DependencyGraphBuilder {
         ResolutionParameters.FailureResolutions failureResolutions,
         DependencyGraphVisitor modelVisitor
     ) {
+        OptimisticMetadataResolver lookahead = Boolean.parseBoolean(System.getProperty(OptimisticMetadataResolver.ENABLED_PROPERTY, "true"))
+            ? new OptimisticMetadataResolver(componentMetaDataResolver, versionSelectorScheme,
+                Math.max(1, Integer.getInteger(OptimisticMetadataResolver.ENABLED_PROPERTY + ".depth", 2)),
+                Math.max(1, Integer.getInteger(OptimisticMetadataResolver.ENABLED_PROPERTY + ".maxPending", 32)),
+                Math.max(1, Integer.getInteger(OptimisticMetadataResolver.ENABLED_PROPERTY + ".maxCandidates", 1024)))
+            : null;
         ResolveState resolveState = new ResolveState(
             idGenerator,
             rootComponent,
             rootVariant,
             componentIdResolver,
-            componentMetaDataResolver,
+            lookahead == null ? componentMetaDataResolver : lookahead,
             edgeFilter,
             moduleExclusions,
             componentSelectorConverter,
@@ -159,7 +165,22 @@ public class DependencyGraphBuilder {
             variantSelector
         );
 
-        traverseGraph(resolveState);
+        if (lookahead == null) {
+            traverseGraph(resolveState);
+        } else {
+            try {
+                buildOperationExecutor.runAll(queue -> {
+                    lookahead.start(queue);
+                    try {
+                        traverseGraph(resolveState);
+                    } finally {
+                        lookahead.stop();
+                    }
+                });
+            } finally {
+                lookahead.logStatistics();
+            }
+        }
 
         validateGraph(resolveState, failingOnDynamicVersions, failingOnChangingVersions, conflictResolution, failureResolutions);
 
@@ -216,6 +237,12 @@ public class DependencyGraphBuilder {
             return;
         }
 
+        ComponentMetaDataResolver metadataResolver = resolveState.getComponentMetadataResolver();
+        if (metadataResolver instanceof OptimisticMetadataResolver) {
+            for (EdgeState edge : dependencies) {
+                ((OptimisticMetadataResolver) metadataResolver).prefetch(edge.getDependencyMetadata());
+            }
+        }
         performSelectionSerially(dependencies, resolveState);
         maybeDownloadMetadataInParallel(node, dependencies, buildOperationExecutor, resolveState.getComponentMetadataResolver());
         attachToTargetRevisionsSerially(dependencies);

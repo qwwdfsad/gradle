@@ -78,7 +78,7 @@ abstract class AbstractRepositoryMetadataSource<S extends MutableModuleComponent
         ModuleComponentArtifactMetadata artifact = getMetaDataArtifactFor(moduleComponentIdentifier);
         LocallyAvailableExternalResource metadataArtifact = artifactResolver.resolveArtifact(artifact, result);
         if (metadataArtifact != null) {
-            ExternalResourceResolverDescriptorParseContext context = new ExternalResourceResolverDescriptorParseContext(componentResolvers, fileResourceRepository, checksumService);
+            ExternalResourceResolverDescriptorParseContext context = new ExternalResourceResolverDescriptorParseContext(componentResolvers, fileResourceRepository, checksumService, artifactResolver);
             MetaDataParser.ParseResult<S> parseResult = parseMetaDataFromResource(moduleComponentIdentifier, metadataArtifact, artifactResolver, context, repositoryName);
             if (parseResult != null) {
                 if (parseResult.hasGradleMetadataRedirectionMarker()) {

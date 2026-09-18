@@ -28,6 +28,8 @@ import org.gradle.internal.component.external.model.ModuleComponentArtifactIdent
 import org.gradle.internal.component.model.ComponentArtifactMetadata;
 import org.gradle.internal.component.model.ComponentArtifactResolveMetadata;
 import org.gradle.internal.component.model.DefaultComponentOverrideMetadata;
+import org.gradle.internal.component.model.DefaultIvyArtifactName;
+import org.gradle.internal.component.model.DefaultModuleDescriptorArtifactMetadata;
 import org.gradle.internal.component.model.MutableModuleSources;
 import org.gradle.internal.hash.ChecksumService;
 import org.gradle.internal.resolve.resolver.ArtifactResolver;
@@ -40,8 +42,10 @@ import org.gradle.internal.resolve.result.DefaultBuildableArtifactResolveResult;
 import org.gradle.internal.resolve.result.DefaultBuildableArtifactSetResolveResult;
 import org.gradle.internal.resolve.result.DefaultBuildableComponentIdResolveResult;
 import org.gradle.internal.resolve.result.DefaultBuildableComponentResolveResult;
+import org.gradle.internal.resolve.result.DefaultResourceAwareResolveResult;
 import org.gradle.internal.resource.local.FileResourceRepository;
 import org.gradle.internal.resource.local.LocallyAvailableExternalResource;
+import org.jspecify.annotations.Nullable;
 
 import java.io.File;
 
@@ -55,11 +59,29 @@ public class ExternalResourceResolverDescriptorParseContext implements Descripto
     private final FileResourceRepository fileResourceRepository;
     private final MutableModuleSources sources = new MutableModuleSources();
     private final ChecksumService checksumService;
+    @Nullable
+    private final ExternalResourceArtifactResolver rawArtifactResolver;
 
     public ExternalResourceResolverDescriptorParseContext(ComponentResolvers mainResolvers, FileResourceRepository fileResourceRepository, ChecksumService checksumService) {
+        this(mainResolvers, fileResourceRepository, checksumService, null);
+    }
+
+    public ExternalResourceResolverDescriptorParseContext(ComponentResolvers mainResolvers, FileResourceRepository fileResourceRepository, ChecksumService checksumService, @Nullable ExternalResourceArtifactResolver rawArtifactResolver) {
         this.mainResolvers = mainResolvers;
         this.fileResourceRepository = fileResourceRepository;
         this.checksumService = checksumService;
+        this.rawArtifactResolver = rawArtifactResolver;
+    }
+
+    @Override
+    public void prefetchPom(ModuleComponentIdentifier componentIdentifier) {
+        if (rawArtifactResolver != null) {
+            // This repository is only a guess. Authoritative resolution still goes through mainResolvers.
+            rawArtifactResolver.resolveArtifact(
+                new DefaultModuleDescriptorArtifactMetadata(componentIdentifier, new DefaultIvyArtifactName(componentIdentifier.getModule(), "pom", "pom")),
+                new DefaultResourceAwareResolveResult()
+            );
+        }
     }
 
     @Override

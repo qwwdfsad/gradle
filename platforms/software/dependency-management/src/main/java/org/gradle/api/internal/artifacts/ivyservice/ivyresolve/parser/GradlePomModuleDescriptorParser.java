@@ -25,6 +25,7 @@ import org.gradle.api.internal.artifacts.dependencies.DefaultMutableVersionConst
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.parser.PomReader.PomDependencyData;
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.parser.data.MavenDependencyKey;
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.parser.data.PomDependencyMgt;
+import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.strategy.ExactVersionSelector;
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.strategy.MavenVersionSelectorScheme;
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.strategy.VersionSelector;
 import org.gradle.api.internal.artifacts.ivyservice.ivyresolve.strategy.VersionSelectorScheme;
@@ -34,20 +35,28 @@ import org.gradle.internal.component.external.model.DefaultModuleComponentIdenti
 import org.gradle.internal.component.external.model.DefaultModuleComponentSelector;
 import org.gradle.internal.component.external.model.maven.MavenDependencyDescriptor;
 import org.gradle.internal.component.external.model.maven.MutableMavenModuleResolveMetadata;
+import org.gradle.internal.operations.BuildOperationContext;
+import org.gradle.internal.operations.BuildOperationDescriptor;
+import org.gradle.internal.operations.BuildOperationExecutor;
+import org.gradle.internal.operations.RunnableBuildOperation;
 import org.gradle.internal.resource.local.FileResourceRepository;
 import org.gradle.internal.resource.local.LocallyAvailableExternalResource;
+import org.gradle.internal.work.WorkerLeaseService;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.text.ParseException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.Semaphore;
 
 /**
  * This based on a copy of org.apache.ivy.plugins.parser.m2.PomModuleDescriptorParser, but now heavily refactored.
@@ -55,19 +64,34 @@ import java.util.Objects;
 public final class GradlePomModuleDescriptorParser extends AbstractModuleDescriptorParser<MutableMavenModuleResolveMetadata> {
     private static final Logger LOGGER = LoggerFactory.getLogger(GradlePomModuleDescriptorParser.class);
     private static final String DEPENDENCY_IMPORT_SCOPE = "import";
+    private static final int IMPORT_PREFETCH_BATCH_SIZE = 8;
     private final VersionSelectorScheme gradleVersionSelectorScheme;
     private final VersionSelectorScheme mavenVersionSelectorScheme;
     private final ImmutableModuleIdentifierFactory moduleIdentifierFactory;
     private final MavenMutableModuleMetadataFactory metadataFactory;
+    @Nullable
+    private final BuildOperationExecutor buildOperationExecutor;
+    @Nullable
+    private final WorkerLeaseService workerLeaseService;
+    private final Semaphore importPrefetch = new Semaphore(1);
 
     public GradlePomModuleDescriptorParser(VersionSelectorScheme gradleVersionSelectorScheme,
                                            ImmutableModuleIdentifierFactory moduleIdentifierFactory,
                                            FileResourceRepository fileResourceRepository, MavenMutableModuleMetadataFactory metadataFactory) {
+        this(gradleVersionSelectorScheme, moduleIdentifierFactory, fileResourceRepository, metadataFactory, null, null);
+    }
+
+    public GradlePomModuleDescriptorParser(VersionSelectorScheme gradleVersionSelectorScheme,
+                                           ImmutableModuleIdentifierFactory moduleIdentifierFactory,
+                                           FileResourceRepository fileResourceRepository, MavenMutableModuleMetadataFactory metadataFactory,
+                                           @Nullable BuildOperationExecutor buildOperationExecutor, @Nullable WorkerLeaseService workerLeaseService) {
         super(fileResourceRepository);
         this.gradleVersionSelectorScheme = gradleVersionSelectorScheme;
         mavenVersionSelectorScheme = new MavenVersionSelectorScheme(gradleVersionSelectorScheme);
         this.moduleIdentifierFactory = moduleIdentifierFactory;
         this.metadataFactory = metadataFactory;
+        this.buildOperationExecutor = buildOperationExecutor;
+        this.workerLeaseService = workerLeaseService;
     }
 
     @Override
@@ -189,7 +213,12 @@ public final class GradlePomModuleDescriptorParser extends AbstractModuleDescrip
     private Map<MavenDependencyKey, PomDependencyMgt> parseImportedDependencyMgts(DescriptorParseContext parseContext, Collection<PomDependencyMgt> currentDependencyMgts) throws IOException, SAXException {
         Map<MavenDependencyKey, PomDependencyMgt> importedDependencyMgts = new LinkedHashMap<>();
 
-        for (PomDependencyMgt currentDependencyMgt : currentDependencyMgts) {
+        List<PomDependencyMgt> dependencies = new ArrayList<>(currentDependencyMgts);
+        for (int i = 0; i < dependencies.size(); i++) {
+            if (i % IMPORT_PREFETCH_BATCH_SIZE == 0) {
+                prefetchImports(parseContext, dependencies.subList(i, Math.min(i + IMPORT_PREFETCH_BATCH_SIZE, dependencies.size())));
+            }
+            PomDependencyMgt currentDependencyMgt = dependencies.get(i);
             if (isDependencyImportScoped(currentDependencyMgt)) {
                 ModuleComponentSelector importedId = DefaultModuleComponentSelector.newSelector(
                     DefaultModuleIdentifier.newId(currentDependencyMgt.getGroupId(), currentDependencyMgt.getArtifactId()),
@@ -203,6 +232,59 @@ public final class GradlePomModuleDescriptorParser extends AbstractModuleDescrip
             }
         }
         return importedDependencyMgts;
+    }
+
+    private void prefetchImports(DescriptorParseContext parseContext, List<PomDependencyMgt> dependencies) {
+        if (buildOperationExecutor == null || workerLeaseService == null || !Boolean.parseBoolean(System.getProperty("org.gradle.internal.resolve.metadata.parallelBom", "true")) || !importPrefetch.tryAcquire()) {
+            return;
+        }
+        try {
+            List<ModuleComponentIdentifier> candidates = new ArrayList<>();
+            for (PomDependencyMgt dependency : dependencies) {
+                try {
+                    String version = dependency.getVersion();
+                    if (isDependencyImportScoped(dependency) && "pom".equals(dependency.getType())
+                        && isResolvedCoordinate(dependency.getGroupId()) && isResolvedCoordinate(dependency.getArtifactId())
+                        && isResolvedCoordinate(version) && !version.endsWith("-SNAPSHOT")) {
+                        VersionSelector selector = mavenVersionSelectorScheme.parseSelector(version);
+                        if (selector instanceof ExactVersionSelector && version.equals(selector.getSelector())) {
+                            candidates.add(DefaultModuleComponentIdentifier.newId(DefaultModuleIdentifier.newId(dependency.getGroupId(), dependency.getArtifactId()), version));
+                        }
+                    }
+                } catch (RuntimeException ignored) {
+                    // Invalid coordinates must fail in the original sequential parse order, not during speculation.
+                }
+            }
+            if (candidates.size() > 1) {
+                // Parsing may run on an unconstrained thread, but creating a queue requires a worker lease.
+                // The queue releases this lease while waiting for the unconstrained downloads.
+                workerLeaseService.runAsWorkerThread(() -> buildOperationExecutor.runAll(queue -> {
+                    for (ModuleComponentIdentifier candidate : candidates) {
+                        queue.addUnconstrained(new RunnableBuildOperation() {
+                            @Override
+                            public void run(BuildOperationContext context) {
+                                try {
+                                    parseContext.prefetchPom(candidate);
+                                } catch (RuntimeException ignored) {
+                                    // Only the authoritative repository-chain lookup may report resolution failures.
+                                }
+                            }
+
+                            @Override
+                            public BuildOperationDescriptor.Builder description() {
+                                return BuildOperationDescriptor.displayName("Prefetch imported BOM " + candidate.getDisplayName());
+                            }
+                        });
+                    }
+                }));
+            }
+        } finally {
+            importPrefetch.release();
+        }
+    }
+
+    private static boolean isResolvedCoordinate(@Nullable String value) {
+        return value != null && !value.isEmpty() && !value.contains("${");
     }
 
     /**

@@ -141,6 +141,7 @@ import org.gradle.internal.locking.DefaultDependencyLockingProvider;
 import org.gradle.internal.locking.NoOpDependencyLockingProvider;
 import org.gradle.internal.management.DependencyResolutionManagementInternal;
 import org.gradle.internal.model.CalculatedValueContainerFactory;
+import org.gradle.internal.operations.BuildOperationExecutor;
 import org.gradle.internal.operations.BuildOperationProgressEventEmitter;
 import org.gradle.internal.operations.BuildOperationRunner;
 import org.gradle.internal.reflect.Instantiator;
@@ -153,6 +154,7 @@ import org.gradle.internal.service.ServiceRegistration;
 import org.gradle.internal.service.ServiceRegistrationProvider;
 import org.gradle.internal.service.ServiceRegistry;
 import org.gradle.internal.service.ServiceRegistryBuilder;
+import org.gradle.internal.work.WorkerLeaseService;
 
 import java.io.File;
 import java.util.List;
@@ -395,7 +397,10 @@ public class DefaultDependencyManagementServices implements DependencyManagement
             ChecksumService checksumService,
             ProviderFactory providerFactory,
             VersionParser versionParser,
-            MavenMirrorResolver mavenMirrorResolver
+            MavenMirrorResolver mavenMirrorResolver,
+            BuildOperationExecutor buildOperationExecutor,
+            WorkerLeaseService workerLeaseService,
+            StartParameter startParameter
         ) {
             return new DefaultBaseRepositoryFactory(
                 localMavenRepositoryLocator,
@@ -405,7 +410,7 @@ public class DefaultDependencyManagementServices implements DependencyManagement
                 locallyAvailableResourceFinder,
                 fileStoreAndIndexProvider.getArtifactIdentifierFileStore(),
                 fileStoreAndIndexProvider.getExternalResourceFileStore(),
-                new GradlePomModuleDescriptorParser(versionSelectorScheme, moduleIdentifierFactory, fileResourceRepository, metadataFactory),
+                new GradlePomModuleDescriptorParser(versionSelectorScheme, moduleIdentifierFactory, fileResourceRepository, metadataFactory, startParameter.isOffline() ? null : buildOperationExecutor, workerLeaseService),
                 new GradleModuleMetadataParser(attributesFactory, moduleIdentifierFactory, instantiator),
                 authenticationSchemeRegistry,
                 ivyContextManager,

@@ -25,4 +25,11 @@ public interface DescriptorParseContext {
     LocallyAvailableExternalResource getMetaDataArtifact(ModuleComponentIdentifier componentIdentifier, ArtifactType artifactType);
 
     LocallyAvailableExternalResource getMetaDataArtifact(ModuleComponentSelector selector, VersionSelector acceptor, ArtifactType artifactType);
+
+    /**
+     * Warms the resource cache without resolving or parsing component metadata, or does nothing if unsupported.
+     * Implementations must support concurrent calls and must not mutate the parse context's metadata sources.
+     */
+    default void prefetchPom(ModuleComponentIdentifier componentIdentifier) {
+    }
 }

@@ -47,6 +47,7 @@ import org.gradle.api.internal.artifacts.repositories.metadata.ImmutableMetadata
 import org.gradle.api.internal.artifacts.repositories.metadata.MavenMetadataArtifactProvider;
 import org.gradle.api.internal.artifacts.repositories.metadata.MavenMutableModuleMetadataFactory;
 import org.gradle.api.internal.artifacts.repositories.metadata.MetadataSource;
+import org.gradle.api.internal.artifacts.repositories.metadata.ParallelMavenMetadataSource;
 import org.gradle.api.internal.artifacts.repositories.metadata.RedirectingGradleMetadataModuleMetadataSource;
 import org.gradle.api.internal.artifacts.repositories.resolver.ExternalResourceArtifactResolver;
 import org.gradle.api.internal.artifacts.repositories.resolver.MavenResolver;
@@ -328,6 +329,9 @@ public abstract class DefaultMavenArtifactRepository extends AbstractAuthenticat
             DefaultMavenPomMetadataSource pomMetadataSource = createPomMetadataSource(mavenMetadataLoader, fileResourceRepository);
             if (metadataSources.ignoreGradleMetadataRedirection) {
                 sources.add(pomMetadataSource);
+            } else if (!metadataSources.gradleMetadata && Boolean.parseBoolean(System.getProperty("org.gradle.internal.resolve.metadata.parallelRedirect", "true"))
+                && ("https".equals(getUrl().getScheme()) || "http".equals(getUrl().getScheme()))) {
+                sources.add(objectFactory.newInstance(ParallelMavenMetadataSource.class, pomMetadataSource, gradleModuleMetadataSource));
             } else {
                 sources.add(new RedirectingGradleMetadataModuleMetadataSource(pomMetadataSource, gradleModuleMetadataSource));
             }

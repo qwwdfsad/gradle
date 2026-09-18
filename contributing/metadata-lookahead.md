@@ -84,14 +84,24 @@ Gradle needs a compatible JDK. All harness Gradle subprocesses use
 `--no-daemon --no-configuration-cache`. Each has a ten-minute
 timeout. No wrapper distribution downloads are needed by the fixture.
 
-The fixture is POM-only: `width` independent chains, each containing `depth`
-modules, end in a shared common module with conflicting versions 1 and 2. A
-direct dependency on common version 2 ensures a conflict even with width 1.
+The default `--metadata pom` fixture contains `width` independent chains, each
+containing `depth` modules, ending in a shared common module with conflicting
+versions 1 and 2. A direct dependency on common version 2 ensures a conflict even
+with width 1. `--metadata module` publishes marked POMs and Gradle module metadata;
+`--metadata mixed` mixes those with POM-only publishers. `--metadata bom` publishes
+a root importing `width` independent BOMs, with `depth` levels of nested imports.
+The BOM fixture checks first-import precedence using conflicting managed versions.
+`--metadata pom-only` keeps redirection enabled but publishes no markers, measuring
+the worst-case extra misses of the POM/module experiment. The original `pom`
+fixture explicitly ignores redirection and is unchanged.
 The task traverses only `ResolutionResult`, never an artifact collection.
-The HTTP/1.1 threaded loopback server serves generated POMs, supports persistent
+The HTTP/1.1 threaded loopback server serves generated metadata, supports persistent
 connections and HEAD, sends correct Content-Length, and injects the configured
 fixed latency into every request (including missing paths). No JARs are served;
-any non-POM request fails benchmark validation.
+unexpected requests fail benchmark validation. Missing speculative `.module`
+requests are allowed only at known POM-only coordinates and reported explicitly.
+Duplicate requests are also reported. The server's accept backlog is 128 to avoid
+artificial connection stalls under concurrent load.
 
 For each run, off and on have **separate initially empty Gradle user homes and
 project directories** inside a fresh directory under
@@ -100,6 +110,8 @@ warm pass reuses each mode's own caches. Off/on execution order alternates each
 run, for both passes. `HOME` is never changed. The harness explicitly sets all
 four prototype properties. Override tuning with `--lookahead-depth`,
 `--max-pending`, and `--max-candidates` (all positive integers).
+Pass additional switches independently with repeatable
+`--baseline-property NAME=VALUE` and `--experimental-property NAME=VALUE` options.
 
 To compare two implementations with lookahead **enabled in both**, preserve an
 installed baseline distribution before installing the new implementation, then use:
@@ -135,7 +147,7 @@ requests indicate reuse, and peak concurrency shows request overlap. They do not
 prove the pool's configured limits or explain all JVM/network behavior. With
 warm caches there may be no HTTP traffic at all.
 
-The printed run directory retains generated POMs, build scripts, both modes'
+The printed run directory retains generated metadata, build scripts, both modes'
 caches, exact commands, combined stdout/stderr logs, per-invocation HTTP request
 details, parameters, and incremental `results.json`. The loopback server is
 stopped and joined on exit, including failures; there is no detached service.
@@ -220,3 +232,157 @@ and Python harness self-checks.
 3. Evaluate latency-aware depth/concurrency only after measuring useful prefetches
    versus unused work. Do not simply raise HTTP connection limits: this change's
    wide-case gain already uses the same 20 pooled connections.
+
+## Resource-download experiments
+
+Both resource-download optimizations are enabled by default on this branch, independently
+of graph lookahead. No opt-in flags are required. They use existing
+cache-backed resource access and pooled HTTP connections, not new HTTP clients.
+
+### POM/module overlap
+
+Opt out with `-Dorg.gradle.internal.resolve.metadata.parallelRedirect=false`
+(default **true**). For remote HTTP(S) Maven repositories using POM redirection,
+download the POM and `.module` resource concurrently, then parse the POM and follow
+its redirection marker normally. Unused module metadata is never parsed; an unused
+download failure does not become an authoritative resolution failure. A missing
+redirected module still permits normal POM fallback. Each resource result is reused
+without a second download, and attempted locations are propagated only when used.
+
+Eight module pairs at most can overlap per metadata-source instance. If all slots
+are occupied, use normal sequential resolution without waiting for admission.
+Snapshots, file repositories, explicit module-first sources,
+and `ignoreGradleMetadataRedirection()` retain their existing path.
+
+This remains experimental: POM-only publishers incur an additional
+missing `.module` request, a slow unused response delays parsing, and speculative
+transport/cache side effects are still possible. Limits are not build-global.
+
+### Imported BOM prefetch
+
+Opt out with `-Dorg.gradle.internal.resolve.metadata.parallelBom=false`
+(default **true**). Prefetch independent fixed-version imported POM resources
+through the current repository's existing artifact resolver. Workers do **not**
+perform recursive component resolution, parse POMs, execute metadata rules, or
+mutate the descriptor context's sources. The original repository-chain lookup,
+parsing, and first-import-wins merge run sequentially afterward.
+
+Each batch contains at most eight dependency-management entries; only eligible
+`pom`/`import` coordinates are submitted, and batches with fewer than two candidates
+are skipped. One batch may run per parser instance; competing parses fall back to
+ordinary sequential resolution. Snapshots, dynamic versions, and unresolved
+properties are not prefetched. Offline builds disable this download hook.
+
+This remains experimental: the current repository is only a guess for an imported BOM.
+It may download unnecessary bytes from a repository that loses authoritative
+selection, or contact it despite authoritative content filtering/ownership rules.
+The normal repository chain still selects the result; the integration test uses
+different BOM contents in two repositories to verify this. Speculative failures
+are ignored locally, but transport, cache, authentication, and verification side
+effects are not eliminated. Nested single-import chains remain sequential.
+
+Both experiments use managed build-operation queues, acquiring a worker lease only
+to create/wait for a batch. Waiting releases the lease, so they also work inside
+unconstrained graph-lookahead operations with `--max-workers=1`. The combined
+one-worker integration test covers both optimizations without opt-in flags.
+
+### Reproduce comparisons
+
+Preserve the preceding installed prototype before installing the changes. These
+commands keep graph lookahead enabled in both distributions and isolate the new
+switch under test, explicitly disabling the other optimization for reproducibility:
+
+```shell
+python3 contributing/metadata-lookahead-benchmark.py \
+  --baseline-gradle "$PWD/build/metadata-download-baseline-gradle/bin/gradle" \
+  --gradle "$PWD/build/lookahead-gradle/bin/gradle" \
+  --metadata module --width 8 --depth 4 --runs 3 --latency-ms 50 \
+  --baseline-property org.gradle.internal.resolve.metadata.parallelBom=false \
+  --experimental-property org.gradle.internal.resolve.metadata.parallelBom=false \
+  --baseline-property org.gradle.internal.resolve.metadata.parallelRedirect=false \
+  --experimental-property org.gradle.internal.resolve.metadata.parallelRedirect=true
+```
+
+Repeat with `--metadata mixed` to measure the cost of speculative misses. These
+remain metadata-only, cold-JVM synthetic experiments, not IDE-import measurements.
+
+For BOMs:
+
+```shell
+python3 contributing/metadata-lookahead-benchmark.py \
+  --baseline-gradle "$PWD/build/metadata-download-baseline-gradle/bin/gradle" \
+  --gradle "$PWD/build/lookahead-gradle/bin/gradle" \
+  --metadata bom --width 16 --depth 1 --runs 3 --latency-ms 50 \
+  --baseline-property org.gradle.internal.resolve.metadata.parallelRedirect=false \
+  --experimental-property org.gradle.internal.resolve.metadata.parallelRedirect=false \
+  --baseline-property org.gradle.internal.resolve.metadata.parallelBom=false \
+  --experimental-property org.gradle.internal.resolve.metadata.parallelBom=true
+```
+
+### Measured results (2026-09-18)
+
+Three alternating baseline/experimental pairs per workload, fresh isolated caches
+for every pair, graph lookahead enabled in both distributions. The baseline is the
+preceding backlog-refill prototype, **not stock Gradle**. The experimental binary
+is also retained in `build/metadata-download-gradle`. Each row enables only the
+switch named in the workload. Values below are medians in milliseconds.
+The measured environment was macOS 26.6.2 aarch64 and Amazon Corretto 25.0.4+7-LTS;
+the experimental distribution identifies as `9.9.0-20260918091240+0000`.
+
+| Workload / switch | Injected latency | Cold baseline → experiment | Cold change | Warm baseline → experiment | Cold requests baseline → experiment |
+| --- | --- | --- | --- | --- | --- |
+| Module 8×4 / redirection | 50 ms | 866 → 589 | **32% faster** | 142 → 139 | 68 → 68 |
+| Mixed 8×4 / redirection | 50 ms | 685 → 585 | **15% faster** | 143 → 140 | 51 → 67–68 |
+| POM-only 8×4 / redirection | 50 ms | 586 → 586 | No improvement | 139 → 136 | 34 → 67 |
+| Module 64×4 / redirection | 50 ms | 1722 → 1708 | ~1%; inconclusive | 211 → 227 | 516 → 516 |
+| 16 independent BOMs / BOM | 50 ms | 1342 → 601 | **55% faster** | 131 → 130 | 34 → 34 |
+| 8 BOM chains, depth 3 / BOM | 50 ms | 1847 → 1438 | **22% faster** | 124 → 120 | 34 → 34 |
+| Module 8×4 / redirection | 0 ms | 338 → 336 | No clear improvement | 140 → 138 | 68 → 68 |
+| 16 independent BOMs / BOM | 0 ms | 354 → 341 | Small, ~13 ms | 133 → 126 | 34 → 34 |
+
+All **96 invocations** resolved the expected components and requested/selected
+edges, with zero unresolved dependencies. No duplicate or unexpected HTTP requests
+occurred; all warm passes made zero HTTP requests. Mixed speculation added 16–17
+404s; POM-only speculation added 33. Slight request-count variation comes from
+whether speculation on a losing version runs before demand takes over.
+
+On the 8×4 module workload, HTTP peak concurrency and pooled connection count rose
+from 9 to 17. Both wide-module modes already saturated the existing 20 connections
+per route, explaining why extra overlap did not help that workload. Independent
+BOMs used 17 peak requests/connections in both modes (the final leaf batch dominates
+that peak), but overlapping the earlier BOM stage removed sequential waits.
+
+The clearest cold sample ranges were 857–881 → 586–599 ms for modules and
+1328–1351 → 554–617 ms for independent BOMs. Three samples establish a useful
+prototype signal, not statistical confidence or a general speedup. Warm wide-module
+resolution regressed by 16 ms at the median; no claim of warm-cache improvement is
+made. Zero injected latency is still loopback HTTP, not zero transport cost.
+
+**Conclusion:** parallel BOM resource fetching is the strongest next investment
+for cold, BOM-heavy builds. POM/module overlap is worthwhile for metadata-rich,
+latency-bound graphs below connection-pool saturation, but these measurements do not
+justify a universal production default. This experimental branch enables both by
+default for further evaluation; real imports and repository-side traffic still need
+measurement. Improve repository eligibility and avoid slow unused-download tails
+before wider rollout; increasing the connection limit is not justified by these
+measurements alone.
+
+Retained raw `results.json`, commands, HTTP request logs, and fixture directories
+under `build/metadata-lookahead-benchmark`:
+
+| Workload | Directory |
+| --- | --- |
+| Module 8×4 | `run-ej4um33i` |
+| Mixed | `run-3q26vyou` |
+| POM-only | `run-eeuvtcx1` |
+| Module 64×4 | `run-z10a5f34` |
+| Independent BOMs | `run-xtyi7r2v` |
+| Nested BOMs | `run-o893vovb` |
+| Zero-latency module | `run-y00f79k2` |
+| Zero-latency BOM | `run-bxydshvn` |
+
+Validation: 144 focused unit tests and 30 HTTP integration cases passed, plus
+dependency-management main/test/integration checkstyle and benchmark self-checks.
+This is not a full Gradle test-suite run. IDE sync, public/corporate repositories,
+connection-queue time, detailed demand-blocked time, and unused-download drain
+time have not been measured.

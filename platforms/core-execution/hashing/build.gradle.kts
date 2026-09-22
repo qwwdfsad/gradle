@@ -1,6 +1,7 @@
 plugins {
     id("gradlebuild.distribution.api-java")
     id("gradlebuild.publish-public-libraries")
+    id("gradlebuild.jmh")
 }
 
 description = "Tools for hashing files and other content"

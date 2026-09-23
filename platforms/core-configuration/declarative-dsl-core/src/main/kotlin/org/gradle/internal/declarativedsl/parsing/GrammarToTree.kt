@@ -44,9 +44,11 @@ import org.jetbrains.kotlin.KtNodeTypes.BINARY_EXPRESSION
 import org.jetbrains.kotlin.KtNodeTypes.BLOCK
 import org.jetbrains.kotlin.KtNodeTypes.BOOLEAN_CONSTANT
 import org.jetbrains.kotlin.KtNodeTypes.CALL_EXPRESSION
+import org.jetbrains.kotlin.KtNodeTypes.CHARACTER_CONSTANT
 import org.jetbrains.kotlin.KtNodeTypes.CLASS
 import org.jetbrains.kotlin.KtNodeTypes.DOT_QUALIFIED_EXPRESSION
 import org.jetbrains.kotlin.KtNodeTypes.ESCAPE_STRING_TEMPLATE_ENTRY
+import org.jetbrains.kotlin.KtNodeTypes.FLOAT_CONSTANT
 import org.jetbrains.kotlin.KtNodeTypes.FUN
 import org.jetbrains.kotlin.KtNodeTypes.FUNCTION_LITERAL
 import org.jetbrains.kotlin.KtNodeTypes.IMPORT_ALIAS
@@ -103,8 +105,6 @@ import org.jetbrains.kotlin.parsing.hasUnsignedLongSuffix
 import org.jetbrains.kotlin.parsing.hasUnsignedSuffix
 import org.jetbrains.kotlin.parsing.parseBoolean
 import org.jetbrains.kotlin.parsing.parseNumericLiteral
-import org.jetbrains.kotlin.psi.stubs.elements.KtConstantExpressionElementType
-import org.jetbrains.kotlin.psi.stubs.elements.KtNameReferenceExpressionElementType
 import org.jetbrains.kotlin.util.getChildren
 import org.jetbrains.kotlin.utils.doNothing
 
@@ -235,7 +235,7 @@ class GrammarToTree(
             LABELED_EXPRESSION -> tree.unsupported(node, UnsupportedLanguageFeature.LabelledStatement)
             ANNOTATED_EXPRESSION -> tree.unsupported(node, AnnotationUsage)
             in QUALIFIED_ACCESS, REFERENCE_EXPRESSION -> propertyAccessStatement(tree, node)
-            is KtConstantExpressionElementType, INTEGER_LITERAL -> constantExpression(tree, node)
+            INTEGER_CONSTANT, FLOAT_CONSTANT, BOOLEAN_CONSTANT, CHARACTER_CONSTANT, NULL, INTEGER_LITERAL -> constantExpression(tree, node)
             STRING_TEMPLATE -> stringTemplate(tree, node)
             CALL_EXPRESSION -> callExpression(tree, node)
             in QUALIFIED_ACCESS -> qualifiedExpression(tree, node)
@@ -336,7 +336,7 @@ class GrammarToTree(
                             val isEffectiveSelector = isSelector && tokenType != ERROR_ELEMENT
                             if (isEffectiveSelector) {
                                 val callExpressionCallee = if (tokenType == CALL_EXPRESSION) tree.getFirstChildExpressionUnwrapped(it) else null
-                                if (tokenType is KtNameReferenceExpressionElementType) {
+                                if (tokenType == REFERENCE_EXPRESSION) {
                                     referenceSelector = checkForFailure(referenceExpression(it))
                                     referenceSourceData = tree.sourceData(it)
                                 } else if (tokenType == CALL_EXPRESSION && callExpressionCallee?.tokenType != LAMBDA_EXPRESSION) {
@@ -559,7 +559,7 @@ class GrammarToTree(
                     when (val tokenType = it.tokenType) {
                         VALUE_ARGUMENT_NAME -> identifier = it.asText
                         EQ -> doNothing()
-                        is KtConstantExpressionElementType -> expression = checkForFailure(constantExpression(tree, it))
+                        INTEGER_CONSTANT, FLOAT_CONSTANT, BOOLEAN_CONSTANT, CHARACTER_CONSTANT, NULL -> expression = checkForFailure(constantExpression(tree, it))
                         CALL_EXPRESSION -> expression = checkForFailure(callExpression(tree, it))
                         else ->
                             if (it.isExpression()) expression = checkForFailure(expression(tree, it))

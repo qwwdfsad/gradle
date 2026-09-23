@@ -15,6 +15,7 @@ test-splits/
 # Kotlin
 # ------
 .kotlin
+/env/kotlin
 
 # IDEA
 # ----

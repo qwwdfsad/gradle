@@ -19,12 +19,39 @@ package org.gradle.kotlin.dsl.support
 import org.gradle.api.JavaVersion
 import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.core.IsEqual.equalTo
+import org.jetbrains.kotlin.buildtools.api.ExecutionPolicy
+import org.jetbrains.kotlin.buildtools.api.ExperimentalBuildToolsApi
+import org.jetbrains.kotlin.buildtools.api.KotlinToolchains
 import org.jetbrains.kotlin.buildtools.api.arguments.enums.JvmTarget as BtaJvmTarget
 import org.jetbrains.kotlin.config.JvmTarget
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 
+@OptIn(ExperimentalBuildToolsApi::class)
 class KotlinCompilerTest {
+
+    @Test
+    fun `in-process strategy uses JVM compilation`() {
+        val toolchains = KotlinToolchains.loadImplementation(javaClass.classLoader)
+        assertTrue(kotlinDslCompilerExecutionPolicy(toolchains, "in-process") is ExecutionPolicy.InProcess)
+    }
+
+    @Test
+    fun `native-image strategy uses the native compiler session`() {
+        val toolchains = KotlinToolchains.loadImplementation(javaClass.classLoader)
+        assertTrue(kotlinDslCompilerExecutionPolicy(toolchains, "native-image") is ExecutionPolicy.NativeImage)
+    }
+
+    @Test
+    fun `unknown execution strategy fails rather than silently falling back`() {
+        val toolchains = KotlinToolchains.loadImplementation(javaClass.classLoader)
+        val failure = assertThrows(IllegalArgumentException::class.java) {
+            kotlinDslCompilerExecutionPolicy(toolchains, "native")
+        }
+        assertTrue(failure.message!!.contains("Use 'in-process' or 'native-image'"))
+    }
 
     @Test
     fun `Gradle JavaVersion to Kotlin JvmTarget direct conversion`() {

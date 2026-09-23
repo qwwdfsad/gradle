@@ -34,6 +34,36 @@ val basePath = run {
     root.dir("gradle").dir("dependency-management")
 }
 
+// Share the compiler repository under this checkout's env/kotlin with the main build and its build logic.
+basePath.dir("../..").file(providers.gradleProperty("kotlinCompilerRepository").getOrElse("env/kotlin/build/repo"))
+    .asFile.toURI().let { repositoryUri ->
+        dependencyResolutionManagement.repositories.maven {
+            name = "localKotlinCompiler"
+            url = repositoryUri
+            content { includeGroup("org.jetbrains.kotlin") }
+        }
+        dependencyResolutionManagement.repositories.maven {
+            name = "kotlinCompilerBootstrap"
+            url = uri("https://packages.jetbrains.team/maven/p/kt/dev")
+            content { includeVersionByRegex("org.jetbrains.kotlin", ".*", ".*-dev-.*") }
+        }
+        gradle.lifecycle.afterProject {
+            // Adding a project repository would hide settings repositories for projects that use only those.
+            if (repositories.isNotEmpty()) {
+                repositories.maven {
+                    name = "localKotlinCompiler"
+                    url = repositoryUri
+                    content { includeGroup("org.jetbrains.kotlin") }
+                }
+                repositories.maven {
+                    name = "kotlinCompilerBootstrap"
+                    url = uri("https://packages.jetbrains.team/maven/p/kt/dev")
+                    content { includeVersionByRegex("org.jetbrains.kotlin", ".*", ".*-dev-.*") }
+                }
+            }
+        }
+    }
+
 /**
  * Version-catalog aliases that must change together when bundling a non-default Groovy major,
  * loaded from `groovy-versions.properties` (keyed as `groovy<major>.<alias>`).
@@ -47,6 +77,7 @@ dependencyResolutionManagement {
     versionCatalogs {
         create("libs") {
             applyGroovyMajorOverrides()
+            providers.gradleProperty("kotlinCompilerVersion").orNull?.let { version("kotlin", "$it!!") }
             from(files(basePath.file("distribution.versions.toml")))
         }
         create("providedLibs") {
